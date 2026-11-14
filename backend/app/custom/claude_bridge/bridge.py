@@ -358,6 +358,15 @@ async def run_stream(cli: str, workdir: Path, system: str, prompt: str, model: s
             await _stop(process)
 
 
+def knowledge_context(app: Any, prompt: str) -> str:
+    """装了 ima 知识库扩展、并且这段提示词是针对某一只股票的，就附上知识库里搜到的片段；否则返回空。"""
+    try:
+        from app.custom.ima_kb.routes import ai_context
+    except ImportError:
+        return ""
+    return ai_context(app, prompt)
+
+
 # ---------------- 路由 ----------------
 def build_router() -> APIRouter:
     router = APIRouter(tags=["custom-claude-bridge"])
@@ -401,6 +410,7 @@ def build_router() -> APIRouter:
         if not isinstance(messages, list):
             raise HTTPException(status_code=400, detail="请求里缺少 messages。")
         system, prompt = build_prompt([m for m in messages if isinstance(m, dict)])
+        prompt += await asyncio.to_thread(knowledge_context, request.app, prompt)  # 要联网搜索，不占事件循环
         shown = str(body.get("model") or DEFAULT_MODEL)
         model = shown if shown != DEFAULT_MODEL else None
         workdir = root / "workdir"

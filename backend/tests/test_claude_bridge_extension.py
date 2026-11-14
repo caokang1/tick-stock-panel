@@ -157,3 +157,14 @@ def test_leading_draft_reasoning_is_not_shown():
     assert stream(["<answer>a < b 且 c </", "d></answer>"]) == "a < b 且 c </d>"  # 像标签但不是结束标签的照常放行
     assert stream(["<answer>写到一半"]) == "写到一半"
     assert stream(["<thinking_mode>auto</thinking_mode>\n\n没加", "标签"]) == "没加标签"  # 没按要求加标签：最后整段给出
+
+
+def test_knowledge_base_snippets_are_appended_to_the_prompt(env, monkeypatch):
+    _, local, auth, folder = env
+    monkeypatch.setattr(bridge, "knowledge_context", lambda app, prompt: "\n\n【知识库】茅台三季报" if "600519" in prompt else "")
+    body = {"messages": [{"role": "user", "content": "标的标准代码: 600519.SH"}]}
+    assert local.post(f"{V1}/chat/completions", json=body, headers=auth).status_code == 200
+    assert (folder / "stdin.txt").read_text(encoding="utf-8") == "标的标准代码: 600519.SH\n\n【知识库】茅台三季报"
+    body = {"messages": [{"role": "user", "content": "今天大盘怎么样"}]}
+    local.post(f"{V1}/chat/completions", json=body, headers=auth)
+    assert (folder / "stdin.txt").read_text(encoding="utf-8") == "今天大盘怎么样"
