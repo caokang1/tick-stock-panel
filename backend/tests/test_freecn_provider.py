@@ -79,7 +79,7 @@ def test_manifest_and_provider_declare_the_same_datasets():
     manifest = yaml.safe_load((Path(freecn.__file__).parent / "plugin.yaml").read_text(encoding="utf-8"))
     provider = freecn.FreeCnProvider()
     assert manifest["name"] == provider.name == "freecn" and "api_key_env" not in manifest
-    assert sorted(manifest["datasets"]) == sorted(provider.config.datasets) == ["adj_factor", "daily", "depth5", "realtime"]
+    assert sorted(manifest["datasets"]) == sorted(provider.config.datasets) == ["adj_factor", "daily", "depth5", "financial", "minute", "realtime"]
     assert manifest["entry"] == "app.plugins.freecn.provider:FreeCnProvider"
     assert freecn.availability() == (True, "ok")
 
@@ -149,7 +149,7 @@ def test_test_dataset_previews_rows_as_json(market):
     result = p.test_dataset("daily", ["600001.SH"])
     assert result["provider"] == "freecn" and result["rows"] >= 0 and "error" not in result
     json.dumps(result)  # 能转成 JSON
-    assert "目前只提供" in p.test_dataset("minute")["error"]
+    assert "不提供这一项" in p.test_dataset("full_minute")["error"]
 
 
 def test_cancel_signal_from_progress_callback_is_passed_through(market):
@@ -252,3 +252,163 @@ def test_rows_without_a_traded_price_are_skipped():
     text = quote_line("sh600001", "停牌", 0.0, 10.0) + quote_line("sz000002", "正常", 8.0, 8.0) + 'v_pv_none_match="1";'
     assert list(quotes.parse(text, 0)) == ["000002.SZ"]
     assert quotes.to_query_code("600001.SH") == "sh600001" and quotes.to_query_code("AAPL.US") is None
+
+
+# ---------------- 财务数据（东方财富数据中心；这里用造出来的返回，不联网） ----------------
+@pytest.fixture
+def finance_api(market):
+    """假的报表接口：2024-03-31 这一期每张报表两页、每页一家公司；别的报告期没有数据。"""
+    import json
+
+    from app.custom.tdx_formula.ql.core import clock
+    from app.custom.tdx_formula.ql.data import runtime
+    from app.plugins.freecn import financials
+
+    calls: list[tuple[str, str, str]] = []
+    state = {"status": 200}
+    rows = {
+        "RPT_LICO_FN_CPD": lambda code: {"REPORTDATE": "2024-03-31 00:00:00", "NOTICE_DATE": "2024-04-20 00:00:00",
+                                         "BASIC_EPS": 0.5, "BPS": 6.0, "WEIGHTAVG_ROE": 8.2, "XSMLL": 31.5,
+                                         "YSTZ": 12.0, "SJLTZ": -3.0},
+        "RPT_DMSK_FN_BALANCE": lambda code: {"REPORT_DATE": "2024-03-31 00:00:00", "NOTICE_DATE": "2024-04-20 00:00:00",
+                                             "TOTAL_ASSETS": 1000.0, "MONETARYFUNDS": 100.0, "ACCOUNTS_RECE": 50.0,
+                                             "TOTAL_LIABILITIES": 400.0, "TOTAL_EQUITY": 600.0,
+                                             "DEBT_ASSET_RATIO": 40.0},
+        "RPT_DMSK_FN_INCOME": lambda code: {"REPORT_DATE": "2024-03-31 00:00:00", "NOTICE_DATE": "2024-04-20 00:00:00",
+                                            "TOTAL_OPERATE_INCOME": 200.0, "OPERATE_COST": 120.0,
+                                            "TOTAL_PROFIT": 50.0, "INCOME_TAX": 10.0, "PARENT_NETPROFIT": 38.0},
+        "RPT_DMSK_FN_CASHFLOW": lambda code: {"REPORT_DATE": "2024-03-31 00:00:00",
+                                              "NOTICE_DATE": "2024-04-20 00:00:00", "NETCASH_OPERATE": 30.0,
+                                              "NETCASH_INVEST": -20.0, "NETCASH_FINANCE": 5.0, "CCE_ADD": 15.0},
+    }
+    codes = ["600001.SH", "000002.SZ"]
+
+    def fetch(params: dict, timeout: float) -> tuple[int, str]:
+        calls.append((params["reportName"], params["filter"][-12:-2], params["pageNumber"]))
+        if state["status"] != 200:
+            return state["status"], ""
+        if "2024-03-31" not in params["filter"]:
+            return 200, json.dumps({"success": False, "result": None})
+        page = int(params["pageNumber"])
+        row = {"SECUCODE": codes[page - 1], **rows[params["reportName"]](codes[page - 1])}
+        return 200, json.dumps({"success": True, "result": {"pages": 2, "data": [row]}})
+
+    financials.set_fetch(fetch)
+    runtime.set_sleep(lambda seconds: None)
+    clock.set_fixed(datetime(2024, 5, 10, 20, 0))
+    yield calls, state
+    clock.set_fixed(None)
+    financials.set_fetch(None)
+    runtime.set_sleep(None)
+
+
+def test_financial_tables_use_tsp_column_names(finance_api):
+    del finance_api  # 只需要它把假接口装上
+    p = freecn.FreeCnProvider()
+    symbols = ["600001.SH", "000002.SZ", "000009.SZ"]
+    income = p.get_financials("income", symbols, latest_only=True)
+    assert income["symbol"].to_list() == ["000002.SZ", "600001.SH"]  # 两页都取了；没有数据的股票不出现
+    row = income.row(0, named=True)
+    assert row["period_end"] == "2024-03-31" and row["announce_date"] == "2024-04-20"
+    assert row["revenue"] == 200.0 and row["net_income_attributable"] == 38.0
+    assert row["net_income"] == 40.0  # 利润总额 - 所得税
+    balance = p.get_financials("balance_sheet", symbols, latest_only=True).row(0, named=True)
+    assert balance["total_assets"] == 1000.0 and balance["cash_and_equivalents"] == 100.0
+    cash = p.get_financials("cash_flow", symbols, latest_only=True).row(0, named=True)
+    assert cash["net_operating_cash_flow"] == 30.0 and cash["net_cash_change"] == 15.0
+    metrics = p.get_financials("metrics", symbols, latest_only=True).row(0, named=True)
+    assert metrics["eps_basic"] == 0.5 and metrics["bps"] == 6.0
+    assert metrics["roe"] == 8.2 and metrics["gross_margin"] == 31.5  # 百分数，来源和 TSP 口径一致，不换算
+    assert metrics["debt_to_asset_ratio"] == 40.0 and metrics["net_margin"] == pytest.approx(20.0)
+    assert p.get_financials("shares", symbols).is_empty()  # 历史股本表这里没有
+    assert p.get_financials("income", ["000009.SZ"], latest_only=True).is_empty()
+
+
+def test_a_report_period_is_downloaded_once_and_then_read_from_disk(finance_api):
+    calls, _ = finance_api
+    p = freecn.FreeCnProvider()
+    p.get_financials("income", ["600001.SH"], latest_only=True)
+    # 最近 3 个报告期：2024-03-31 取了 2 页，另外两期各问 1 次发现没有数据
+    assert sorted(calls) == [("RPT_DMSK_FN_INCOME", "2023-09-30", "1"), ("RPT_DMSK_FN_INCOME", "2023-12-31", "1"),
+                             ("RPT_DMSK_FN_INCOME", "2024-03-31", "1"), ("RPT_DMSK_FN_INCOME", "2024-03-31", "2")]
+    calls.clear()
+    p.get_financials("income", ["600001.SH"], latest_only=True)
+    p.get_financials("metrics", ["600001.SH"], latest_only=True)  # 指标表也要用利润表，直接读本机的
+    assert ("RPT_DMSK_FN_INCOME", "2024-03-31", "1") not in calls
+
+
+def test_financial_refusal_pauses_the_source(finance_api):
+    from app.custom.tdx_formula.ql.core.errors import SourceRejected
+    from app.custom.tdx_formula.ql.data.runtime import get_runtime
+
+    calls, state = finance_api
+    state["status"] = 429
+    with pytest.raises(SourceRejected):
+        freecn.FreeCnProvider().get_financials("income", ["600001.SH"], latest_only=True)
+    assert len(calls) == 1 and get_runtime().limiter.state_of("akshare_em") == "cooling"
+
+
+def test_recent_report_periods_are_quarter_ends():
+    from app.plugins.freecn import financials
+
+    assert financials.recent_periods(date(2024, 5, 10), 3) == [date(2024, 3, 31), date(2023, 12, 31), date(2023, 9, 30)]
+    assert financials.recent_periods(date(2024, 3, 30), 2) == [date(2023, 12, 31), date(2023, 9, 30)]
+
+
+# ---------------- 分钟 K（新浪；这里用造出来的返回，不联网） ----------------
+@pytest.fixture
+def minute_api(market):
+    import json
+
+    from app.custom.tdx_formula.ql.data import runtime
+    from app.plugins.freecn import minutes
+
+    calls: list[dict] = []
+    state = {"status": 200}
+
+    def fetch(params: dict, timeout: float) -> tuple[int, str]:
+        calls.append(dict(params))
+        rows = [{"day": f"2024-03-14 {clock}:00", "open": "10.00", "high": "10.20", "low": "9.90", "close": "10.10",
+                 "volume": "12300", "amount": "124000.5"} for clock in ("09:31", "09:32", "15:00")]
+        rows.insert(0, {"day": "2024-03-13 15:00:00", "open": "9.8", "high": "9.9", "low": "9.7", "close": "9.8",
+                        "volume": "500", "amount": "4900"})
+        return state["status"], json.dumps(rows)
+
+    minutes.set_fetch(fetch)
+    runtime.set_sleep(lambda seconds: None)
+    yield calls, state
+    minutes.set_fetch(None)
+    runtime.set_sleep(None)
+
+
+def test_minute_bars_follow_the_tsp_contract(minute_api):
+    calls, _ = minute_api
+    p = freecn.FreeCnProvider()
+    df = p.get_minute(["600001.SH"], datetime(2024, 3, 14), datetime(2024, 3, 14, 15, 0))
+    assert df.columns == ["symbol", "datetime", "open", "high", "low", "close", "volume", "amount"]
+    assert df["datetime"].to_list() == [datetime(2024, 3, 14, 9, 31), datetime(2024, 3, 14, 9, 32),
+                                        datetime(2024, 3, 14, 15, 0)]  # 北京时间墙钟；前一天的那根在时间范围外
+    assert df["volume"][0] == 123.0 and df["amount"][0] == 124000.5  # 股 → 手；成交额是元
+    assert calls == [{"symbol": "sh600001", "scale": "1", "ma": "no", "datalen": "241"}]
+    p.get_minute(["600001.SH"], datetime(2024, 3, 14), datetime(2024, 3, 14, 15, 0))
+    assert len(calls) == 1  # 刚查过的不再重复查
+    assert p.minute_history_days == 8
+    assert p.get_minute(["600001.SH"], datetime(2024, 3, 14), datetime(2024, 3, 14, 15, 0), freq="5m").is_empty()
+
+
+def test_whole_market_minute_sync_is_refused_before_any_request(minute_api):
+    calls, _ = minute_api
+    many = [f"{600000 + i}.SH" for i in range(21)]
+    with pytest.raises(ProviderRequestError, match="一次只能查一只"):
+        freecn.FreeCnProvider().get_minute(many, datetime(2024, 3, 14), datetime(2024, 3, 14, 15, 0))
+    assert calls == []
+
+
+def test_minute_refusal_is_reported_and_pauses_the_source(minute_api):
+    from app.custom.tdx_formula.ql.data.runtime import get_runtime
+
+    calls, state = minute_api
+    state["status"] = 456
+    with pytest.raises(ProviderRequestError, match="限制了访问"):
+        freecn.FreeCnProvider().get_minute(["600001.SH"], None, None)
+    assert len(calls) == 1 and get_runtime().limiter.state_of("akshare_sina") == "cooling"

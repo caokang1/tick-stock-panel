@@ -26,11 +26,11 @@ import polars as pl
 
 from app.data_providers.base import ProviderRequestError
 
-from . import quotes
+from . import financials, minutes, quotes
 
 logger = logging.getLogger(__name__)
 
-_DATASETS = ("daily", "adj_factor", "realtime", "depth5")
+_DATASETS = ("daily", "adj_factor", "realtime", "depth5", "financial", "minute")
 _CHUNK = 200  # 每读这么多只股票交一批、报一次进度
 _DAILY_SCHEMA = {"symbol": pl.String, "date": pl.Date, "open": pl.Float64, "high": pl.Float64,
                  "low": pl.Float64, "close": pl.Float64, "volume": pl.Int64, "amount": pl.Float64}
@@ -97,6 +97,7 @@ class _Config:
 class FreeCnProvider:
     name = "freecn"
     builtin = True
+    minute_history_days = minutes.HISTORY_DAYS  # 免费来源只留最近 8 个交易日的 1 分钟线
 
     def __init__(self) -> None:
         self.config = _Config()
@@ -143,6 +144,38 @@ class FreeCnProvider:
 
     def get_realtime_indices(self, symbols: list[str]) -> list[dict] | None:
         return self._quotes_of(list(symbols)) if symbols else []
+
+    # ---------------- 分钟 K ----------------
+    def get_minute(self, symbols: list[str], start_time: datetime | None, end_time: datetime | None,
+                   asset_type: str = "stock", on_chunk_done: Progress | None = None,
+                   freq: str = "1m") -> pl.DataFrame:
+        """1 分钟线，只支持逐只查看（单次最多 20 只）；多了直接拒绝，不去做全市场的历史分钟同步。"""
+        symbols = list(symbols)
+        if freq != "1m" or not symbols:
+            if on_chunk_done is not None:
+                on_chunk_done(0, 0)
+            return pl.DataFrame(schema=minutes.SCHEMA)
+        if len(symbols) > minutes.MAX_SYMBOLS:
+            raise ProviderRequestError(minutes.TOO_MANY)
+        _store()  # 确保数据目录已经设好（限流器的计数存在那里）
+        try:
+            return minutes.get_minute(symbols, start_time, end_time, quotes.to_query_code, on_chunk_done)
+        except ProviderRequestError:
+            raise
+        except Exception as e:
+            if not hasattr(e, "message"):
+                raise  # 不是取数的错（比如进度回调要求取消），原样交回去
+            raise ProviderRequestError(e.message) from e
+
+    # ---------------- 财务数据 ----------------
+    def get_financials(self, table: str, symbols: list[str], latest_only: bool = False) -> pl.DataFrame:
+        """财务指标和三大报表的主要科目（东方财富），按报告期一次取回全市场，存在本机。"""
+        from app.custom.tdx_formula.ql.core import clock
+        from app.custom.tdx_formula.ql.core import config as ql_config
+
+        _store()  # 确保数据目录已经设好
+        root = Path(ql_config.get_settings().data_dir)
+        return financials.get_financials(root, table, list(symbols), latest_only, clock.today())
 
     # ---------------- 五档盘口 ----------------
     def get_depth_batch(self, symbols: list[str]) -> dict[str, dict]:
@@ -272,9 +305,13 @@ class FreeCnProvider:
                     rows = [{"symbol": s, **row["depth"]} for s, row in fetched.items() if row["depth"]]
                 return {"provider": self.name, "dataset": dataset, "rows": len(rows),
                         "columns": list(rows[0]) if rows else [], "preview": rows[:5]}
+            elif dataset == "minute":
+                df = self.get_minute(syms[:1], now - timedelta(days=1), now)
+            elif dataset == "financial":
+                df = self.get_financials("metrics", syms, latest_only=True)
             else:
                 return {"provider": self.name, "dataset": dataset, "rows": 0,
-                        "error": "免费公开来源目前只提供日线、除权因子、实时行情和五档盘口"}
+                        "error": "免费公开来源不提供这一项（全量分钟需要付费来源）"}
         except Exception as e:  # noqa: BLE001 —— 试拉只报告结果，不让错误冒到页面外
             return {"provider": self.name, "dataset": dataset, "rows": 0, "error": getattr(e, "message", str(e))}
         head = df.head(5).to_dicts()
