@@ -64,6 +64,16 @@ def read_industry(market_dir: Path) -> dict[str, str]:
     return {str(c): str(i) for c, i in zip(df["code"], df["industry"], strict=True) if str(i)}
 
 
+def read_index(market_dir: Path, code: str) -> pd.DataFrame | None:
+    """某个指数的日线：date, code, open, high, low, close, volume, amount。没有时返回 None。"""
+    path = market_dir / "index" / f"{code}.parquet"
+    if not path.exists():
+        return None
+    df = pq.read_table(path).to_pandas()
+    df["date"] = _dates(df["date"].to_numpy())
+    return df
+
+
 def stock_names(market_dir: Path) -> dict[str, str]:
     df = read_securities(market_dir)
     return dict(zip(df["code"].astype(str), df["name"].astype(str), strict=False))

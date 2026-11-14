@@ -61,7 +61,7 @@ def env(tmp_path, monkeypatch):
     app = FastAPI()
     app.state.repo = types.SimpleNamespace(store=types.SimpleNamespace(data_dir=tmp_path / "tsp-data"))
     # 项目根目录指到临时目录里：这样"并排的 quant-lab"也在临时目录里找，碰不到真实数据
-    app.include_router(build_router(repo_root=tmp_path / "tsp"))
+    app.include_router(build_router(repo_root=tmp_path / "tsp", background=False))
     with TestClient(app) as client:
         yield client, tmp_path
     loader.clear_cache()
@@ -156,26 +156,14 @@ def test_stats_signals_and_picks(env):
     assert r.status_code == 400 and "格式" in r.json()["detail"]
 
 
-def test_saved_formulas_are_kept_in_the_extension_folder(env):
-    client, root = env
-    item = client.post(f"{PREFIX}/saved", json={"name": "我的公式", "formula": "C>MA(C,5);",
-                                                 "conditions": [ABOVE_MA], "universe": ALL}).json()
-    assert item["id"] and item["universe"]["exclude_st"] is False
-    assert (root / "tsp-data" / "user_data" / "extensions" / "tdx_formula" / "saved.json").exists()
-    dup = client.post(f"{PREFIX}/saved", json={"name": "我的公式", "conditions": [ABOVE_MA]})
-    assert dup.status_code == 400 and "换个名字" in dup.json()["detail"]
-    renamed = client.post(f"{PREFIX}/saved", json={"id": item["id"], "name": "改名了", "conditions": [ABOVE_MA]})
-    assert renamed.json()["id"] == item["id"]
-    assert [x["name"] for x in client.get(f"{PREFIX}/saved").json()] == ["改名了"]
-    assert client.delete(f"{PREFIX}/saved/{item['id']}").json() == {"ok": True}
-    assert client.delete(f"{PREFIX}/saved/{item['id']}").status_code == 404
-    assert client.get(f"{PREFIX}/saved").json() == []
-
-
 def test_blocks_lists_the_indicator_library(env):
     client, _ = env
     blocks = client.get(f"{PREFIX}/blocks").json()
     assert len(blocks) >= 30 and {"id", "name", "formula", "params", "category"} <= set(blocks[0])
+    options = client.get(f"{PREFIX}/options").json()
+    assert {b["id"] for b in options["rank_blocks"]} >= {"rank_amount", "rank_float_cap"}
+    assert {b["id"] for b in options["timing_blocks"]} >= {"timing_above_ma"}
+    assert options["indexes"][0] == {"code": "sh.000300", "name": "沪深300"}
 
 
 def test_a_fake_repository_never_becomes_a_directory_on_disk(tmp_path, monkeypatch):
@@ -187,6 +175,186 @@ def test_a_fake_repository_never_becomes_a_directory_on_disk(tmp_path, monkeypat
     app.include_router(build_router(repo_root=tmp_path / "tsp"))
     with TestClient(app) as client:
         assert client.get(f"{PREFIX}/status").status_code == 503
-        r = client.post(f"{PREFIX}/saved", json={"name": "x", "conditions": [ABOVE_MA]})
+        r = client.post(f"{PREFIX}/strategies", json={"name": "x", "config": {"conditions": [ABOVE_MA]}})
         assert r.status_code == 503
     assert list(tmp_path.iterdir()) == []
+
+
+# ---------------- 第二步：策略、组合回测、每日提醒、实际持仓 ----------------
+TRADE = {"max_positions": 2, "max_hold_days": 3, "take_profit": None, "stop_loss": None}
+
+
+def make_index(market: Path) -> None:
+    (market / "index").mkdir(exist_ok=True)
+    n = len(DAYS)
+    close = 3000.0 + np.arange(n)
+    pq.write_table(pa.table({
+        "date": pa.array(DAYS.date, type=pa.date32()), "code": ["sh.000300"] * n,
+        "open": close, "high": close + 5, "low": close - 5, "close": close,
+        "volume": np.full(n, 1e9), "amount": np.full(n, 1e11),
+    }), market / "index" / "sh.000300.parquet")
+
+
+def set_latest(market: Path, day: str) -> None:
+    (market / "meta.json").write_text(f'{{"latest_date": "{day}", "updated_through": "{day}"}}', encoding="utf-8")
+
+
+@pytest.fixture
+def live_env(env):
+    from datetime import datetime
+
+    from app.custom.tdx_formula.ql.core import clock
+
+    client, root = env
+    market = make_market(root)
+    make_index(market)
+    set_latest(market, str(DAYS[-1].date()))
+    clock.set_fixed(datetime(2024, 4, 1, 20, 0))
+    yield client, market
+    clock.set_fixed(None)
+
+
+def new_strategy(client, name="均线策略", **config) -> str:
+    body = {"name": name, "config": {"conditions": [ABOVE_MA], "universe": ALL, "trade": TRADE,
+                                     "formula": "C>MA(C,5);", **config}}
+    r = client.post(f"{PREFIX}/strategies", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def test_strategy_crud_keeps_the_pasted_formula(live_env):
+    client, _ = live_env
+    sid = new_strategy(client)
+    detail = client.get(f"{PREFIX}/strategies/{sid}").json()
+    assert detail["status"] == "draft" and detail["config"]["formula"] == "C>MA(C,5);"
+    assert detail["config"]["trade"]["max_positions"] == 2
+    dup = client.post(f"{PREFIX}/strategies", json={"name": "均线策略", "config": {"conditions": [ABOVE_MA]}})
+    assert dup.status_code == 400 and "换个名字" in dup.json()["detail"]
+    renamed = client.put(f"{PREFIX}/strategies/{sid}", json={"name": "改名了"}).json()
+    assert renamed["name"] == "改名了" and renamed["config"]["formula"] == "C>MA(C,5);"
+    (row,) = client.get(f"{PREFIX}/strategies").json()
+    assert row["name"] == "改名了" and row["condition_count"] == 1 and row["live"] is None
+    assert client.delete(f"{PREFIX}/strategies/{sid}").json() == {"ok": True}
+    assert client.get(f"{PREFIX}/strategies/{sid}").status_code == 404
+
+
+def test_portfolio_backtest_on_quant_lab_data(live_env):
+    client, _ = live_env
+    sid = new_strategy(client)
+    body = {"conditions": [ABOVE_MA], "universe": ALL, "trade": TRADE, "strategy_id": sid,
+            "timing": {"block_id": "timing_above_ma", "params": {"n": 5}, "index_code": "sh.000300",
+                       "on_fail": "stop_buy"}}
+    result = client.post(f"{PREFIX}/backtest", json=body).json()
+    assert result["range"]["end"] == str(DAYS[-1].date()) and result["benchmark"]["name"] == "沪深300"
+    assert result["trade_count"] > 0 and result["summary"]["total_return"] is not None
+    assert len(result["curve"]["equity"]) == len(DAYS) and result["summary"]["ok_day_ratio"] > 0.5
+    assert client.get(f"{PREFIX}/strategies/{sid}/backtest").json()["created_at"] == result["created_at"]
+    (row,) = client.get(f"{PREFIX}/strategies").json()
+    assert row["backtest"]["annual_return"] == result["summary"]["annual_return"]
+    empty = client.post(f"{PREFIX}/backtest", json={"conditions": [], "universe": ALL})
+    assert empty.status_code == 400 and "至少要启用一个选股条件" in empty.json()["detail"]
+
+
+def test_start_makes_the_first_reminder_and_daily_job_follows_new_data(live_env, monkeypatch):
+    from app.custom.tdx_formula.live_service import LiveService
+
+    client, market = live_env
+    sid = new_strategy(client)
+    started = client.post(f"{PREFIX}/strategies/{sid}/start").json()
+    assert started["status"] == "running"
+    today = client.get(f"{PREFIX}/today").json()
+    (block,) = today["strategies"]
+    assert block["reminder"]["date"] == str(DAYS[-1].date()) and not block["behind"] and block["real"] is None
+    assert [b["code"] for b in block["reminder"]["buys"]] == ["sh.600001", "sz.000003"]
+    assert client.delete(f"{PREFIX}/strategies/{sid}").status_code == 400  # 运行中的不能删
+
+    # 行情没有新的一天：每日任务不该跑
+    sent: list[str] = []
+    monkeypatch.setattr(LiveService, "_send", staticmethod(lambda text: sent.append(text) or ["飞书"]))
+    first = client.post(f"{PREFIX}/daily/run").json()
+    assert first["ok"] and first["data_date"] == str(DAYS[-1].date()) and first["pushed"]
+    assert "【通达信公式 3月25日 收盘提醒】" in sent[0] and "均线策略" in sent[0] and "买入：甲股份" in sent[0]
+    again = client.post(f"{PREFIX}/daily/run").json()
+    assert again["ok"] and not again["pushed"] and len(sent) == 1  # 同一天只推送一次
+
+    account = client.get(f"{PREFIX}/strategies/{sid}/account").json()
+    assert account["initial_cash"] == 1_000_000 and account["curve"]["equity"] == [1.0]
+    backups = list((market.parents[2] / "tsp-data" / "user_data" / "extensions" / "tdx_formula" / "backups").glob("*"))
+    assert [p.name for p in backups] == ["tdx-2024-04-01.db"]  # 每日任务开始前自动备份
+
+
+def test_background_check_only_runs_when_new_data_arrives(live_env, monkeypatch):
+    from app.custom.tdx_formula.live_service import LiveService
+
+    client, market = live_env
+    sid = new_strategy(client)
+    client.get(f"{PREFIX}/today")
+    svc: LiveService = None  # type: ignore[assignment]
+    calls: list[int] = []
+    original = LiveService.run_daily
+
+    def spy(self, sender=None):
+        nonlocal svc
+        svc = self
+        calls.append(1)
+        return original(self, sender=lambda text: [])
+
+    monkeypatch.setattr(LiveService, "run_daily", spy)
+    # 取到服务对象：没有运行中的策略时不到期
+    client.post(f"{PREFIX}/daily/run")
+    assert svc.is_due() is False and len(calls) == 1
+    client.post(f"{PREFIX}/strategies/{sid}/start")
+    svc.tick()
+    assert len(calls) == 1  # 手动跑过、行情没有新的一天：不重复跑
+    set_latest(market, "2024-03-26")  # quant-lab 说行情到了新的一天
+    assert svc.is_due() is True
+    svc.tick()
+    assert len(calls) == 2
+
+
+def test_real_positions_follow_my_own_trades(live_env):
+    client, _ = live_env
+    sid = new_strategy(client)
+    r = client.put(f"{PREFIX}/strategies/{sid}/real", json={"enabled": True, "capital": 100_000})
+    assert r.status_code == 400 and "运行中" in r.json()["detail"]
+    client.post(f"{PREFIX}/strategies/{sid}/start")
+    view = client.put(f"{PREFIX}/strategies/{sid}/real", json={"enabled": True, "capital": 100_000}).json()
+    assert view["enabled"] and view["cash"] == 100_000 and view["positions"] == []
+    todos = {t["code"]: t for t in view["todos"]}
+    assert set(todos) == {"sh.600001", "sz.000003"} and todos["sh.600001"]["side"] == "buy"
+    assert todos["sh.600001"]["shares"] % 100 == 0 and todos["sh.600001"]["shares"] > 0
+
+    latest = str(DAYS[-1].date())
+    done = client.post(f"{PREFIX}/real/todos/{todos['sh.600001']['id']}",
+                       json={"done": True, "price": 18.0, "shares": 1000, "date": latest}).json()
+    (pos,) = done["positions"]
+    assert pos["code"] == "sh.600001" and pos["name"] == "甲股份" and pos["buy_price"] == 18.0
+    assert done["cash"] == pytest.approx(100_000 - 18_000 - 5)
+    skipped = client.post(f"{PREFIX}/real/todos/{todos['sz.000003']['id']}", json={"done": False}).json()
+    assert skipped["todos"] == []
+
+    (block,) = client.get(f"{PREFIX}/today").json()["strategies"]
+    assert block["real"]["positions"][0]["id"] == pos["id"]
+    (row,) = client.get(f"{PREFIX}/strategies").json()
+    assert row["real_return"] == pytest.approx(done["equity"] / 100_000 - 1)
+
+    sold = client.post(f"{PREFIX}/real/positions/{pos['id']}/sell", json={"price": 19.0, "date": latest}).json()
+    assert sold["positions"] == [] and sold["trades"][0]["reason"] == "手动卖出"
+    removed = client.delete(f"{PREFIX}/real/positions/{pos['id']}").json()
+    assert removed["trades"] == [] and removed["cash"] == 100_000
+    bad = client.post(f"{PREFIX}/strategies/{sid}/real/positions",
+                      json={"code": "999999", "shares": 100, "price": 10, "date": latest})
+    assert bad.status_code == 400
+    off = client.put(f"{PREFIX}/strategies/{sid}/real", json={"enabled": False}).json()
+    assert off["enabled"] is False and client.get(f"{PREFIX}/today").json()["strategies"][0]["real"] is None
+
+
+def test_settings_change_costs_within_limits(live_env):
+    client, _ = live_env
+    base = client.get(f"{PREFIX}/settings").json()
+    assert base["costs"]["commission"] == 0.00025 and base["initial_cash"] == 1_000_000
+    assert set(base["push"]) == {"feishu", "wecom"}
+    changed = client.put(f"{PREFIX}/settings", json={"costs": {"slippage": 0.002}, "initial_cash": 200_000}).json()
+    assert changed["costs"]["slippage"] == 0.002 and changed["initial_cash"] == 200_000
+    assert client.put(f"{PREFIX}/settings", json={"costs": {"slippage": 0.5}}).status_code == 400
+    assert client.put(f"{PREFIX}/settings", json={"initial_cash": 5}).status_code == 400

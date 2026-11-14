@@ -1,14 +1,13 @@
-"""扩展的业务拼装：找到 quant-lab 的行情目录、读出全市场数据、带缓存地求值、保存粘贴过的公式。"""
+"""找到 quant-lab 的行情目录、读出全市场数据、带缓存地求值、解析公式、信号统计。"""
 
 from __future__ import annotations
 
 import json
 import os
 import threading
-import uuid
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +25,11 @@ from .ql.blocks import (
     rendered_formula,
     split_formula,
 )
-from .ql.core.errors import DataError, NotFoundError, QuantLabError
+from .ql.core.errors import DataError, QuantLabError
 from .ql.core.panel import Panel
 
 ENV_DATA_DIR = "TDX_FORMULA_DATA_DIR"
 _CACHE_SIZE = 64
-_MAX_SAVED = 200
 
 
 class FormulaService:
@@ -208,44 +206,6 @@ class FormulaService:
             items.append({"code": code, "name": names.get(code, ""), "close": round(close, 3), "change": change,
                           "float_cap": cap if np.isfinite(cap) else None, "industry": str(panel.industry[c])})
         return {"date": str(panel.dates[-1]), "items": items}
-
-    # ---------------- 保存粘贴过的公式 ----------------
-    def _saved_path(self) -> Path:
-        return self._root / "saved.json"
-
-    def saved(self) -> list[dict[str, Any]]:
-        try:
-            items = json.loads(self._saved_path().read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        return items if isinstance(items, list) else []
-
-    def save(self, name: str, formula: str, conditions: Sequence[Mapping[str, Any]],
-             universe: Mapping[str, Any] | None, item_id: str | None = None) -> dict[str, Any]:
-        name = name.strip()
-        if not name:
-            raise QuantLabError("请起个名字。")
-        enabled_conditions(conditions)  # 条件写得不对时在这里报错，不保存
-        items = self.saved()
-        entry = {
-            "id": item_id or uuid.uuid4().hex[:12], "name": name, "formula": formula,
-            "conditions": [dict(c) for c in conditions], "universe": Universe.from_dict(universe).to_dict(),
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        others = [x for x in items if x.get("id") != entry["id"]]
-        if any(x.get("name") == name for x in others):
-            raise QuantLabError(f"已经有一个叫“{name}”的了，请换个名字。")
-        if item_id is None and len(others) >= _MAX_SAVED:
-            raise QuantLabError(f"最多保存 {_MAX_SAVED} 个，请先删掉一些。")
-        self._write_json(self._saved_path(), [entry, *others])
-        return entry
-
-    def delete(self, item_id: str) -> None:
-        items = self.saved()
-        kept = [x for x in items if x.get("id") != item_id]
-        if len(kept) == len(items):
-            raise NotFoundError("没有这一条，可能已经删除了。")
-        self._write_json(self._saved_path(), kept)
 
 
 def _day(text: str | None, label: str) -> date | None:

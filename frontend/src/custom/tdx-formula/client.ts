@@ -9,6 +9,7 @@ export interface ParamSpec {
   max: number
   step: number
   unit: string
+  grid?: number[]
 }
 
 /** 一个选股条件：粘贴公式拆出来的带着自己的公式（pasted），指标库里的只记编号（block_id） */
@@ -92,13 +93,288 @@ export interface Pick {
   industry: string
 }
 
-export interface Saved {
+/** 指标库里的一个积木：排名因子、择时条件都是它 */
+export interface Block {
+  id: string
+  kind: 'condition' | 'rank' | 'timing'
+  name: string
+  description: string
+  formula: string
+  params: ParamSpec[]
+  source: string
+  category: string
+}
+
+/** 买卖规则。比例都是小数：0.1 表示 10%；null 表示不用这一条（position_pct 为 null 表示均分） */
+export interface TradeRules {
+  max_positions: number
+  position_pct: number | null
+  max_hold_days: number | null
+  take_profit: number | null
+  stop_loss: number | null
+}
+
+export type Direction = 'desc' | 'asc'
+export type OnFail = 'stop_buy' | 'clear'
+
+export interface RankFactor {
+  block_id: string
+  params: Record<string, number>
+  weight: number
+  direction: Direction
+}
+
+export interface RankConfig {
+  factors: RankFactor[]
+}
+
+export interface TimingConfig {
+  block_id: string
+  params: Record<string, number>
+  index_code: string
+  on_fail: OnFail
+}
+
+/** 一个策略的全部内容；formula 是粘贴的公式原文 */
+export interface StrategyConfig {
+  conditions: Condition[]
+  universe: Universe | null
+  rank: RankConfig | null
+  trade: TradeRules | null
+  timing: TimingConfig | null
+  formula: string
+}
+
+export interface Options {
+  rank_blocks: Block[]
+  timing_blocks: Block[]
+  indexes: { code: string; name: string }[]
+  trade_defaults: TradeRules
+}
+
+export type StrategyStatus = 'draft' | 'running' | 'stopped'
+
+export interface StrategySummary {
   id: string
   name: string
-  formula: string
-  conditions: Condition[]
-  universe: Universe
+  status: StrategyStatus
   updated_at: string
+  condition_count: number
+  backtest: { annual_return: number | null; max_drawdown: number | null; created_at: string | null } | null
+  live: { total_return: number; started_on: string; last_date: string | null } | null
+  real_return: number | null
+}
+
+export interface StrategyDetail {
+  id: string
+  name: string
+  status: StrategyStatus
+  config: Partial<StrategyConfig>
+  created_at: string
+  updated_at: string
+}
+
+export interface BacktestSummary {
+  annual_return: number | null
+  total_return: number | null
+  max_drawdown: number | null
+  sharpe: number | null
+  win_rate: number | null
+  trade_count: number
+  avg_hold_days: number | null
+  final_equity: number | null
+  initial_cash: number | null
+  benchmark_annual_return: number | null
+  benchmark_total_return: number | null
+  /** 大盘择时成立的日子占多少；没有设置择时为 null */
+  ok_day_ratio: number | null
+}
+
+export interface BacktestTrade {
+  code: string
+  name: string
+  buy_date: string
+  buy_price: number | null
+  sell_date: string | null
+  sell_price: number | null
+  shares: number
+  return: number | null
+  pnl: number | null
+  hold_days: number
+  reason: string
+  /** 回测结束时还持有 */
+  open: boolean
+}
+
+export interface BacktestResult {
+  summary: BacktestSummary
+  /** equity、benchmark 都是净值（起点为 1）；指数还没有数据的日子为 null */
+  curve: { dates: string[]; equity: (number | null)[]; benchmark: (number | null)[] }
+  yearly: { year: number; strategy: number | null; benchmark: number | null }[]
+  trades: BacktestTrade[]
+  trade_count: number
+  range: { start: string; end: string }
+  benchmark: { code: string; name: string }
+  assumptions: string[]
+  created_at: string
+}
+
+export interface TimingState {
+  enabled: boolean
+  ok: boolean
+}
+
+export interface ReminderBuy {
+  code: string
+  name: string
+  rank: number
+  score: number
+  reason: string
+  reference_only: boolean
+}
+
+export interface ReminderSell {
+  code: string
+  name: string
+  reason: string
+  gain: number
+}
+
+export interface PaperPosition {
+  code: string
+  name: string
+  buy_date: string
+  buy_price: number
+  shares: number
+  cost: number
+  value: number
+  gain: number
+  hold_days: number
+}
+
+/** 模拟账户某一天收盘后生成的提醒 */
+export interface Reminder {
+  date: string
+  timing: TimingState
+  buys: ReminderBuy[]
+  sells: ReminderSell[]
+  notes: string[]
+  positions: PaperPosition[]
+  candidate_count: number
+  account: { equity: number; cash: number; initial_cash: number; total_return: number; started_on: string }
+}
+
+export interface RealTodo {
+  id: number
+  strategy_id: string
+  date: string
+  side: 'buy' | 'sell'
+  code: string
+  name: string
+  /** 建议股数；0 表示资金不够买一手 */
+  shares: number
+  /** 提醒那天的收盘价 */
+  price: number
+  reason: string
+  status: string
+  default_date: string
+}
+
+export interface RealPosition {
+  id: number
+  code: string
+  name: string
+  buy_date: string
+  buy_price: number
+  shares: number
+  cost: number
+  value: number
+  gain: number
+  /** 0 表示行情还没有更新到买入那天 */
+  hold_days: number
+  sell_reason: string | null
+}
+
+export interface RealTrade {
+  id: number
+  code: string
+  name: string
+  buy_date: string
+  buy_price: number
+  sell_date: string
+  sell_price: number
+  shares: number
+  return: number
+  pnl: number
+  reason: string
+}
+
+/** 实际持仓的全部内容。每个实际持仓的接口都返回最新的这一份 */
+export interface RealView {
+  enabled: boolean
+  capital: number
+  cash: number
+  equity: number
+  total_return: number
+  date: string | null
+  timing: TimingState
+  positions: RealPosition[]
+  todos: RealTodo[]
+  trades: RealTrade[]
+}
+
+export interface PushChannels {
+  feishu: boolean
+  wecom: boolean
+}
+
+export interface LastRun {
+  due_date: string
+  started_at: string
+  finished_at: string | null
+  ok: boolean | null
+  data_date: string | null
+  pushed: boolean
+  message: string | null
+}
+
+export interface TodayStrategy {
+  strategy_id: string
+  name: string
+  reminder: Reminder | null
+  real: RealView | null
+  /** 这份提醒比最新的行情旧 */
+  behind: boolean
+}
+
+export interface Today {
+  latest_date: string | null
+  strategies: TodayStrategy[]
+  last_run: LastRun | null
+  push: PushChannels
+}
+
+export interface DailyRunResult {
+  ok: boolean
+  data_date: string | null
+  pushed: boolean
+  message: string
+}
+
+export type CostKey = 'commission' | 'min_commission' | 'stamp_tax' | 'slippage'
+
+export interface Settings {
+  costs: Record<CostKey, number>
+  cost_limits: Record<CostKey, { min: number; max: number; label: string }>
+  cost_defaults: Record<CostKey, number>
+  initial_cash: number
+  push: PushChannels
+}
+
+export interface TradeInput {
+  shares: number
+  price: number
+  date: string
 }
 
 export interface ConditionsBody {
@@ -107,6 +383,7 @@ export interface ConditionsBody {
 }
 
 const BASE = '/api/custom/tdx-formula'
+const seg = encodeURIComponent
 
 async function request<T>(endpoint: string, method = 'GET', body?: unknown, timeoutMs = 120_000): Promise<T> {
   const controller = new AbortController()
@@ -147,13 +424,62 @@ export const tdxApi = {
   signals: (body: ConditionsBody, limit = 50) =>
     request<{ total: number; items: SignalItem[] }>('signals', 'POST', { ...body, limit }),
   picks: (body: ConditionsBody) => request<{ date: string; items: Pick[] }>('picks', 'POST', body),
-  saved: () => request<Saved[]>('saved'),
-  save: (body: ConditionsBody & { id?: string; name: string; formula: string }) =>
-    request<Saved>('saved', 'POST', body),
-  remove: (id: string) => request<{ ok: boolean }>(`saved/${encodeURIComponent(id)}`, 'DELETE'),
+
+  options: () => request<Options>('options'),
+  strategies: () => request<StrategySummary[]>('strategies'),
+  strategy: (id: string) => request<StrategyDetail>(`strategies/${seg(id)}`),
+  createStrategy: (name: string, config: StrategyConfig) =>
+    request<StrategyDetail>('strategies', 'POST', { name, config }),
+  updateStrategy: (id: string, name: string, config: StrategyConfig) =>
+    request<StrategyDetail>(`strategies/${seg(id)}`, 'PUT', { name, config }),
+  deleteStrategy: (id: string) => request<{ ok: boolean }>(`strategies/${seg(id)}`, 'DELETE'),
+  startStrategy: (id: string) => request<StrategyDetail>(`strategies/${seg(id)}/start`, 'POST'),
+  stopStrategy: (id: string) => request<StrategyDetail>(`strategies/${seg(id)}/stop`, 'POST'),
+
+  /** 组合回测要十几秒到一分钟，多等一会儿 */
+  backtest: (config: StrategyConfig, strategy_id?: string) =>
+    request<BacktestResult>('backtest', 'POST', { ...config, strategy_id: strategy_id ?? null }, 300_000),
+  /** 这个策略上次保存的回测结果；还没有回测过返回 null */
+  savedBacktest: async (id: string): Promise<BacktestResult | null> => {
+    try {
+      return await request<BacktestResult>(`strategies/${seg(id)}/backtest`)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null
+      throw error
+    }
+  },
+
+  today: () => request<Today>('today'),
+  runDaily: () => request<DailyRunResult>('daily/run', 'POST', undefined, 300_000),
+
+  setReal: (id: string, enabled: boolean, capital?: number) =>
+    request<RealView>(`strategies/${seg(id)}/real`, 'PUT', { enabled, capital: capital ?? null }),
+  skipAllTodos: (id: string) => request<RealView>(`strategies/${seg(id)}/real/skip-all`, 'POST'),
+  addRealPosition: (id: string, body: TradeInput & { code: string }) =>
+    request<RealView>(`strategies/${seg(id)}/real/positions`, 'POST', body),
+  /** 答复一条提醒：照做了（done，带实际的价格、日期，买入还带股数），或者没做 */
+  answerTodo: (todoId: number, done: boolean, trade?: { price: number; date: string; shares?: number }) =>
+    request<RealView>(`real/todos/${todoId}`, 'POST', { done, ...trade }),
+  editRealPosition: (positionId: number, body: TradeInput) =>
+    request<RealView>(`real/positions/${positionId}`, 'PUT', body),
+  sellRealPosition: (positionId: number, body: { price: number; date: string }) =>
+    request<RealView>(`real/positions/${positionId}/sell`, 'POST', body),
+  /** 删除一笔持仓或一笔已卖出的交易记录（两者是同一张表里的记录） */
+  deleteRealPosition: (positionId: number) => request<RealView>(`real/positions/${positionId}`, 'DELETE'),
+
+  settings: () => request<Settings>('settings'),
+  updateSettings: (body: { costs?: Partial<Record<CostKey, number>>; initial_cash?: number }) =>
+    request<Settings>('settings', 'PUT', body),
 }
 
+const ROOT = ['custom', 'tdx-formula'] as const
+
 export const tdxKeys = {
-  status: ['custom', 'tdx-formula', 'status'] as const,
-  saved: ['custom', 'tdx-formula', 'saved'] as const,
+  status: [...ROOT, 'status'] as const,
+  options: [...ROOT, 'options'] as const,
+  strategies: [...ROOT, 'strategies'] as const,
+  strategy: (id: string) => [...ROOT, 'strategy', id] as const,
+  backtest: (id: string) => [...ROOT, 'backtest', id] as const,
+  today: [...ROOT, 'today'] as const,
+  settings: [...ROOT, 'settings'] as const,
 }
