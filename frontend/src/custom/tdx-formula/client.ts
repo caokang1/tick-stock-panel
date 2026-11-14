@@ -125,6 +125,10 @@ export interface DataSchedule {
   run_time: string
   run_time_min: string
   run_time_max: string
+  /** 行情更新完以后，是否自动让 TSP 接着同步一次 */
+  auto_sync_tsp: boolean
+  /** 最近一次自动让 TSP 同步的情况；还没有过时为 null */
+  tsp_sync_message: string | null
 }
 
 /** 实时行情：两轮全市场快照之间隔多少秒 */
@@ -510,6 +514,7 @@ export const tdxApi = {
   setDataRealtime: (interval_seconds: number) => request<RealtimeSetting>('data/realtime', 'PUT', { interval_seconds }),
   dataSchedule: () => request<DataSchedule>('data/schedule'),
   setDataSchedule: (run_time: string) => request<DataSchedule>('data/schedule', 'PUT', { run_time }),
+  setAutoSyncTsp: (auto_sync_tsp: boolean) => request<DataSchedule>('data/schedule', 'PUT', { auto_sync_tsp }),
 
   parse: (formula: string) => request<ParseResult>('parse', 'POST', { formula }),
   stats: (body: ConditionsBody) => request<StatsResult>('stats', 'POST', body),

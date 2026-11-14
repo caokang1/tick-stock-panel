@@ -298,6 +298,14 @@ function ScheduleSection() {
     },
     onError: e => setError(errorText(e)), // 后端不接受这个时间时，会说明允许的范围和原因
   })
+  const autoSync = useMutation({
+    mutationFn: tdxApi.setAutoSyncTsp,
+    onSuccess: next => {
+      qc.setQueryData(tdxKeys.dataSchedule, next)
+      toast(next.auto_sync_tsp ? '已打开：行情更新完会自动让 TSP 同步' : '已关闭，TSP 要自己点同步', 'success')
+    },
+    onError: e => setError(errorText(e)),
+  })
 
   const data = schedule.data
   const value = time ?? data?.run_time ?? ''
@@ -337,6 +345,18 @@ function ScheduleSection() {
             <p className={NOTE}>
               每个交易日到这个时间自动更新当天的行情，然后生成提醒；只在 TSP 运行时执行，更新失败会每半小时再试一次。
               股市 15:00 收盘，数据来源要到 {data.run_time_min} 之后才有当天完整的行情，所以不能设得更早。
+            </p>
+            <label className="flex items-center gap-2 text-xs text-secondary">
+              <input
+                type="checkbox" checked={data.auto_sync_tsp} disabled={autoSync.isPending}
+                onChange={e => autoSync.mutate(e.target.checked)}
+              />
+              行情更新完以后，自动让 TSP 接着同步一次
+            </label>
+            <p className={NOTE}>
+              TSP 自己的盘后同步默认在 15:35，那时这里还没有当天的行情。打开后，这里更新完、而 TSP 里的日 K 还停在前一天时，
+              会替你点一次 TSP 的同步（只在日 K 用的是“免费公开来源”时）；不成功最多再试两次，每次隔半小时。
+              {data.tsp_sync_message && <span className="block text-secondary">最近一次：{data.tsp_sync_message}</span>}
             </p>
           </>
         )}

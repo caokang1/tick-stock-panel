@@ -408,7 +408,11 @@ def test_realtime_snapshot_interval_has_a_floor(env):
 def test_schedule_time_must_be_after_the_data_is_ready(env):
     client, _ = env
     base = client.get(f"{PREFIX}/data/schedule").json()
-    assert base == {"run_time": "18:30", "run_time_min": "18:00", "run_time_max": "23:30"}
+    assert base == {"run_time": "18:30", "run_time_min": "18:00", "run_time_max": "23:30",
+                    "auto_sync_tsp": True, "tsp_sync_message": None}
+    off = client.put(f"{PREFIX}/data/schedule", json={"auto_sync_tsp": False}).json()
+    assert off["auto_sync_tsp"] is False and off["run_time"] == "18:30"  # 只改开关，不动时间
+    assert client.put(f"{PREFIX}/data/schedule", json={"auto_sync_tsp": True}).json()["auto_sync_tsp"] is True
     assert client.put(f"{PREFIX}/data/schedule", json={"run_time": "19:15"}).json()["run_time"] == "19:15"
     early = client.put(f"{PREFIX}/data/schedule", json={"run_time": "15:30"})
     assert early.status_code == 400 and "18:00" in early.json()["detail"]
@@ -486,3 +490,90 @@ def test_progress_shows_whichever_finished_last(env, monkeypatch):
                     "eta_seconds": None, "message": "已补上 1 个交易日"}
     fake["finished_at"] = "2024-03-27T09:00:00"  # 再之后又下载了一次
     assert client.get(f"{PREFIX}/data/progress").json()["message"] == "历史下载完成"
+
+
+# ---------------- 行情更新完以后让 TSP 接着同步 ----------------
+def test_tsp_is_asked_to_sync_only_when_it_is_behind(env, tmp_path, monkeypatch):
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+    from datetime import timedelta as _timedelta
+
+    from app.custom.tdx_formula import tsp_sync
+
+    client, _ = env
+    client.get(f"{PREFIX}/data/schedule")  # 让扩展把自己的设置库建好
+    data_dir = tmp_path / "tsp"
+    sync = tsp_sync.TspSync()
+    source = {"name": "freecn"}
+    monkeypatch.setattr(tsp_sync, "_daily_source", lambda: source["name"])
+    now, latest = _datetime(2024, 3, 14, 18, 40), _date(2024, 3, 14)
+
+    assert tsp_sync.tsp_latest_date(data_dir) is None
+    assert sync.due(data_dir, latest, now) is False  # TSP 一天数据都没有：第一次同步留给用户自己点
+    (data_dir / "kline_daily" / "date=2024-03-13").mkdir(parents=True)
+    (data_dir / "kline_daily" / "不是日期").mkdir()
+    assert tsp_sync.tsp_latest_date(data_dir) == _date(2024, 3, 13)
+    assert sync.due(data_dir, latest, now) is True
+    assert sync.due(data_dir, None, now) is False  # 本机还没有行情
+    source["name"] = "tickflow"
+    assert sync.due(data_dir, latest, now) is False  # TSP 的日 K 不是用免费公开来源，不管
+    source["name"] = "freecn"
+    sync.set_enabled(False)
+    assert sync.due(data_dir, latest, now) is False  # 开关关着
+    sync.set_enabled(True)
+    (data_dir / "kline_daily" / "date=2024-03-14").mkdir()
+    assert sync.due(data_dir, latest, now) is False  # TSP 已经是最新
+
+    # 试过以后半小时内不再试；同一天最多试 3 次
+    (data_dir / "kline_daily" / "date=2024-03-14").rmdir()
+    for attempt in range(tsp_sync.MAX_ATTEMPTS):
+        moment = now + _timedelta(minutes=31 * attempt)
+        assert sync.due(data_dir, latest, moment) is True
+        sync._last_attempt, sync._attempts = moment, {latest: attempt + 1}
+        assert sync.due(data_dir, latest, moment + _timedelta(minutes=5)) is False
+    assert sync.due(data_dir, latest, now + _timedelta(hours=5)) is False
+
+
+def test_trigger_runs_the_tsp_pipeline_on_the_app_event_loop(env, monkeypatch):
+    """后台线程里发起、在 TSP 的事件循环里执行；结果写成一句话给页面看。"""
+    import asyncio
+    import threading
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+    from types import SimpleNamespace
+
+    import app.api.pipeline as pipeline_api
+    from app.custom.tdx_formula import tsp_sync
+
+    client, _ = env
+    client.get(f"{PREFIX}/data/schedule")
+    seen: list[tuple] = []
+    outcome = {"value": {"job_id": "j1", "reused": False}}
+
+    async def fake_trigger(repo, capset, quote_service=None):
+        seen.append((repo, capset, quote_service, threading.current_thread().name))
+        if isinstance(outcome["value"], Exception):
+            raise outcome["value"]
+        return outcome["value"]
+
+    monkeypatch.setattr(pipeline_api, "trigger_pipeline_job", fake_trigger)
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, name="app-loop", daemon=True)
+    runner.start()
+    try:
+        fake_app = SimpleNamespace(state=SimpleNamespace(repo="repo", capabilities="caps"))
+        sync = tsp_sync.TspSync()
+        now, latest = _datetime(2024, 3, 14, 18, 40), _date(2024, 3, 14)
+        sync.trigger(fake_app, loop, latest, now)
+        assert seen == [("repo", "caps", None, "app-loop")]
+        assert "已让 TSP 开始同步" in sync.info()["tsp_sync_message"] and sync._attempts == {latest: 1}
+        outcome["value"] = {"job_id": "j1", "reused": True}
+        sync.trigger(fake_app, loop, latest, now)
+        assert "没有另开" in sync.info()["tsp_sync_message"] and sync._attempts == {latest: 2}
+        outcome["value"] = RuntimeError("boom")
+        sync.trigger(fake_app, loop, latest, now)  # 触发失败不抛错，只记下来
+        assert "没有成功" in sync.info()["tsp_sync_message"]
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=5)
+        loop.close()

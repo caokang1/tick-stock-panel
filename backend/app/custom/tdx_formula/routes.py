@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from contextlib import asynccontextmanager
@@ -13,8 +14,11 @@ from pydantic import BaseModel, Field
 
 from .data_service import DataService
 from .live_service import LiveService
+from .ql.core import clock
 from .ql.core.errors import FormulaError, QuantLabError
+from .ql.data import store as ql_store
 from .service import FormulaService
+from .tsp_sync import TspSync
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +70,8 @@ class SourcePolicyUpdate(BaseModel):
 
 
 class ScheduleUpdate(BaseModel):
-    run_time: str = Field(max_length=5)
+    run_time: str | None = Field(default=None, max_length=5)
+    auto_sync_tsp: bool | None = None
 
 
 class StrategyConfig(BaseModel):
@@ -139,6 +144,7 @@ def build_router(background: bool = True) -> APIRouter:
     """background：是否启动每分钟检查一次的后台线程（测试里关掉）。"""
     services: dict[str, tuple[FormulaService, LiveService, DataService]] = {}
     guard = threading.Lock()
+    tsp_sync = TspSync()
 
     def pair(app: Any) -> tuple[FormulaService, LiveService, DataService]:
         repo = getattr(app.state, "repo", None)
@@ -177,13 +183,20 @@ def build_router(background: bool = True) -> APIRouter:
         """每分钟看一眼：到了设定的时间就更新当天的行情；行情到了新的一天、又有运行中的策略，就生成提醒并推送。"""
         stopping = threading.Event()
         thread = None
+        event_loop = asyncio.get_running_loop()
         if background:
             def loop() -> None:
                 while not stopping.wait(TICK_SECONDS):
                     try:
-                        _, live_service, data_service = pair(app)
+                        formula_service, live_service, data_service = pair(app)
                         data_service.tick()
                         live_service.tick()
+                        # 行情更新完，TSP 那份还是旧的，就让 TSP 接着同步一次
+                        now = clock.now()
+                        latest = ql_store.latest_date() if formula_service.has_data() else None
+                        data_dir = Path(app.state.repo.store.data_dir)
+                        if not data_service.busy() and tsp_sync.due(data_dir, latest, now):
+                            tsp_sync.trigger(app, event_loop, latest, now)
                     except HTTPException:
                         pass  # 数据仓库还没就绪，下一轮再看
                     except Exception:
@@ -246,13 +259,16 @@ def build_router(background: bool = True) -> APIRouter:
 
     @router.get("/data/schedule")
     def data_schedule(request: Request) -> dict[str, Any]:
-        return run(data(request).schedule)
+        return {**run(data(request).schedule), **tsp_sync.info()}
 
     @router.put("/data/schedule")
     def data_schedule_update(body: ScheduleUpdate, request: Request) -> dict[str, Any]:
         svc = data(request)
-        run(svc.set_run_time, body.run_time)
-        return run(svc.schedule)
+        if body.run_time is not None:
+            run(svc.set_run_time, body.run_time)
+        if body.auto_sync_tsp is not None:
+            tsp_sync.set_enabled(body.auto_sync_tsp)
+        return {**run(svc.schedule), **tsp_sync.info()}
 
     @router.get("/blocks")
     def blocks(request: Request) -> list[dict[str, Any]]:
