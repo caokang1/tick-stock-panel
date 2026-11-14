@@ -6,8 +6,9 @@
 ## 怎么用
 
 1. 确认本机装了 `claude` 命令行并且已经登录（终端里运行 `claude` 能正常对话）。
-2. 打开 `GET /api/custom/claude-bridge/info`（在浏览器里访问面板地址加这段路径即可），里面有三样东西：
-   `base_url`（接口地址）、`api_key`（转接口令）、`model`（模型名）。
+2. 打开 `GET /api/custom/claude-bridge/info`（在浏览器里访问面板地址加这段路径即可），里面有接口地址 `base_url`、
+   模型名 `model`，以及转接口令所在的文件 `api_key_file`。口令本身不从接口给出，要在这台电脑上打开那个文件看
+   （面板没有设访问密码时，局域网里的人也能打开这个地址，所以不能把口令放在里面）。
 3. 到面板的“设置 → AI”，选 OpenAI 兼容接口，把这三样填进去保存。
 
 模型填 `claude-cli` 表示用命令行的默认模型；也可以填 `sonnet`、`opus`、`haiku` 这样的别名。

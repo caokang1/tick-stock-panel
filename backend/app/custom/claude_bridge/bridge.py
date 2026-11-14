@@ -80,6 +80,7 @@ def bridge_key(root: Path) -> str:
         if key:
             return key
     key = "cb-" + secrets.token_urlsafe(24)
+    root.mkdir(parents=True, exist_ok=True)
     path.write_text(key, encoding="utf-8")
     with contextlib.suppress(OSError):
         os.chmod(path, 0o600)
@@ -363,12 +364,18 @@ def build_router() -> APIRouter:
 
     @router.get(f"{INFO_PREFIX}/info")
     def info(request: Request) -> dict[str, Any]:
-        """给本机用户看的配置说明（走面板自己的登录校验）：命令行在不在、地址和口令是什么。"""
+        """给本机用户看的配置说明（走面板自己的登录校验）：命令行在不在、地址是什么、口令存在哪个文件里。
+
+        口令本身不从接口给出：面板没有设访问密码时，同一个局域网里的人也能打开这个地址
+        （经前端开发服务器转发过来的请求在后端看来都是本机发的，分不出来）。口令只能在这台电脑上读文件得到。
+        """
         cli = find_cli()
         port = request.url.port or 3018
+        root = _root(request)
+        bridge_key(root)  # 第一次用到时生成
         return {
             "available": cli is not None, "command": cli,
-            "base_url": f"http://127.0.0.1:{port}{PREFIX}", "api_key": bridge_key(_root(request)),
+            "base_url": f"http://127.0.0.1:{port}{PREFIX}", "api_key_file": str(root / "key.txt"),
             "model": DEFAULT_MODEL,
             "notes": ["只接受本机的请求，并且要带转接口令。", "不支持工具调用，AI 助手只能纯聊天。",
                       "每次调用都会用到本机 claude 命令行登录的那个账号的额度。"],

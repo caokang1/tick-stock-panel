@@ -47,7 +47,7 @@ def env(tmp_path, monkeypatch):
     app.state.repo = types.SimpleNamespace(store=types.SimpleNamespace(data_dir=tmp_path / "tsp-data"))
     app.include_router(bridge.build_router())
     local = TestClient(app, client=("127.0.0.1", 50000))
-    key = local.get(INFO).json()["api_key"]
+    key = bridge.bridge_key(tmp_path / "tsp-data" / "user_data" / "extensions" / "claude_bridge")
     return app, local, {"Authorization": f"Bearer {key}"}, cli.parent
 
 
@@ -56,7 +56,15 @@ def test_extension_identity_and_info(env):
     assert EXTENSION_ID == "community.claude-bridge"
     info = local.get(INFO).json()
     assert info["available"] is True and info["base_url"].endswith("/claude-bridge/v1")
-    assert info["api_key"].startswith("cb-") and local.get(INFO).json()["api_key"] == info["api_key"]  # 口令固定
+    # 口令不从接口给出（没设访问密码时局域网里的人也能打开这个地址），只说存在哪个文件里
+    assert "api_key" not in info and "cb-" not in local.get(INFO).text
+    from pathlib import Path
+
+    key_file = Path(info["api_key_file"])
+    first = key_file.read_text(encoding="utf-8")
+    assert first.startswith("cb-")
+    local.get(INFO)
+    assert key_file.read_text(encoding="utf-8") == first  # 口令固定，不会每次重新生成
 
 
 def test_only_this_computer_with_the_right_key_may_call(env):
