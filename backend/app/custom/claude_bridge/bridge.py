@@ -124,7 +124,7 @@ def build_prompt(messages: list[dict[str, Any]]) -> tuple[str, str]:
         prompt = f"下面是到目前为止的对话记录。请接着以助手的身份回答最后一条用户消息，只输出回答本身。\n\n{record}"
     if len(prompt) + len(system) > MAX_PROMPT_CHARS:
         raise HTTPException(status_code=413, detail="发给 AI 的内容太长了，请缩短后再试。")
-    return system or DEFAULT_SYSTEM, prompt
+    return (system or DEFAULT_SYSTEM) + ANSWER_RULE, prompt
 
 
 def build_command(cli: str, system: str, model: str | None, *, stream: bool) -> list[str]:
@@ -168,8 +168,8 @@ def _failure(stderr: bytes, stdout: bytes = b"") -> str:
 
 
 # ---------------- 去掉回答开头夹带的思考过程 ----------------
-_THINK_TAGS = ("reasoning", "thinking")
-_THINK_BLOCK = re.compile(r"^\s*<(reasoning|thinking)>.*?</\1>\s*", re.DOTALL)
+_THINK_TAGS = ("reasoning", "thinking", "thinking_mode")
+_THINK_BLOCK = re.compile(r"^\s*<(reasoning|thinking_mode|thinking)>.*?</\1>\s*", re.DOTALL)
 
 
 def strip_thinking(text: str) -> str:
@@ -181,34 +181,62 @@ def strip_thinking(text: str) -> str:
         text = cleaned
 
 
-class LeadingThinkingFilter:
-    """流式输出用：开头如果是一段思考标签，先攒着，等它结束后丢掉；其余的原样放行。"""
+ANSWER_OPEN, ANSWER_CLOSE = "<answer>", "</answer>"
+ANSWER_RULE = (
+    "\n\n【输出格式】把给用户看的完整回答放在 <answer> 和 </answer> 之间，标签之外不要写任何内容"
+    "（不要写思考过程、草稿或计划）。回答本身的内容和格式按上面的要求来。"
+)
+
+
+def extract_answer(text: str) -> str:
+    """取 <answer>…</answer> 里面的内容；模型没有按要求加标签时，退回到去掉开头草稿后的全文。"""
+    start = text.find(ANSWER_OPEN)
+    if start < 0:
+        return strip_thinking(text).strip()
+    body = text[start + len(ANSWER_OPEN):]
+    end = body.rfind(ANSWER_CLOSE)
+    return (body if end < 0 else body[:end]).strip()
+
+
+class AnswerStream:
+    """流式输出用：只放行 <answer> 里面的内容。
+
+    模型偶尔会在正式回答前面写一段草稿（不在思考块里，而是当成正文输出）。让它把正式回答放进标签里，
+    标签之前的一律不外送；如果一直没有出现标签，结束时把攒下的全文（去掉开头的草稿标记）一次给出，不丢内容。
+    """
 
     def __init__(self) -> None:
-        self._held = ""
-        self._passing = False
+        self._buffer = ""
+        self._state = "before"  # before → inside → after
 
     def feed(self, piece: str) -> str:
-        if self._passing:
-            return piece
-        self._held += piece
-        head = self._held.lstrip()
-        openers = [f"<{tag}>" for tag in _THINK_TAGS]
-        if any(head.startswith(o) for o in openers):
-            cleaned = strip_thinking(self._held)
-            if cleaned == self._held:
-                return ""  # 思考标签还没结束，继续攒
-            self._held = cleaned
-            return self.feed("")  # 后面可能还跟着一段，或者已经是正文
-        if head and not any(o.startswith(head) for o in openers):
-            self._passing = True
-            out, self._held = self._held, ""
+        if self._state == "after":
+            return ""
+        self._buffer += piece
+        if self._state == "before":
+            start = self._buffer.find(ANSWER_OPEN)
+            if start < 0:
+                return ""
+            self._buffer = self._buffer[start + len(ANSWER_OPEN):].lstrip("\n")
+            self._state = "inside"
+        end = self._buffer.find(ANSWER_CLOSE)
+        if end >= 0:
+            out, self._buffer, self._state = self._buffer[:end].rstrip(), "", "after"
             return out
-        return ""  # 还看不出开头是不是思考标签
+        # 末尾可能是半个结束标签，先留着不送
+        keep = next((n for n in range(min(len(ANSWER_CLOSE) - 1, len(self._buffer)), 0, -1)
+                     if ANSWER_CLOSE.startswith(self._buffer[-n:])), 0)
+        out = self._buffer[:len(self._buffer) - keep]
+        self._buffer = self._buffer[len(self._buffer) - keep:]
+        return out
 
     def flush(self) -> str:
-        out, self._held = self._held, ""
-        self._passing = True
+        out = ""
+        if self._state == "before":
+            out = strip_thinking(self._buffer).strip()
+        elif self._state == "inside":
+            out = self._buffer
+        self._buffer, self._state = "", "after"
         return out
 
 
@@ -232,7 +260,7 @@ async def run_once(cli: str, workdir: Path, system: str, prompt: str, model: str
     if process.returncode != 0 or not isinstance(body, dict) or body.get("is_error"):
         message = str(body.get("result") or "") if isinstance(body, dict) else ""
         raise HTTPException(status_code=502, detail=_failure(message.encode() or err, out if not message else b""))
-    return strip_thinking(str(body.get("result") or "")), _usage(body.get("usage"))
+    return extract_answer(str(body.get("result") or "")), _usage(body.get("usage"))
 
 
 def _usage(raw: Any) -> dict[str, int]:
@@ -271,7 +299,7 @@ async def run_stream(cli: str, workdir: Path, system: str, prompt: str, model: s
         sent = False
         final = ""
         failed: str | None = None
-        leading = LeadingThinkingFilter()
+        leading = AnswerStream()
         try:
             assert process.stdin is not None and process.stdout is not None
             process.stdin.write(prompt.encode("utf-8"))
@@ -322,7 +350,7 @@ async def run_stream(cli: str, workdir: Path, system: str, prompt: str, model: s
                     sent = True
                     yield chunk({"content": rest})
                 if not sent and final:
-                    yield chunk({"content": strip_thinking(final)})  # 没有收到逐段的文字时，把完整的回答一次送出
+                    yield chunk({"content": extract_answer(final)})  # 没有收到逐段的文字时，把完整的回答一次送出
             yield chunk({}, "stop")
             yield "data: [DONE]\n\n"
         finally:

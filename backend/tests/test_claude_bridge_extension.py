@@ -82,7 +82,7 @@ def test_plain_answer_in_openai_shape_and_cli_runs_without_tools(env):
     args = (folder / "args.txt").read_text(encoding="utf-8").split("\n")
     assert args[0] == "-p" and args[args.index("--tools") + 1] == ""  # 全部工具关掉
     assert "--strict-mcp-config" in args and "--no-session-persistence" in args
-    assert args[args.index("--system-prompt") + 1] == "你是分析师"
+    assert "--system-prompt\n你是分析师" + bridge.ANSWER_RULE in "\n".join(args)  # 系统提示后面带上输出格式的要求
     assert "--model" not in args  # claude-cli 表示用命令行的默认模型
     assert (folder / "stdin.txt").read_text(encoding="utf-8") == "总结一下"  # 正文走标准输入，不占命令行长度
 
@@ -95,7 +95,7 @@ def test_model_alias_and_multi_turn_conversation(env):
     assert local.post(f"{V1}/chat/completions", json=body, headers=auth).status_code == 200
     args = (folder / "args.txt").read_text(encoding="utf-8").split("\n")
     assert args[args.index("--model") + 1] == "sonnet"
-    assert args[args.index("--system-prompt") + 1] == bridge.DEFAULT_SYSTEM
+    assert "--system-prompt\n" + bridge.DEFAULT_SYSTEM + bridge.ANSWER_RULE in "\n".join(args)
     sent = (folder / "stdin.txt").read_text(encoding="utf-8")
     assert "【用户】\n第一问" in sent and "【助手】\n第一答" in sent and sent.rstrip().endswith("【用户】\n第二问")
 
@@ -127,7 +127,7 @@ def test_prompt_helpers():
     assert bridge.delta_text({"type": "stream_event", "event": {"type": "content_block_delta",
                                                                  "delta": {"type": "text_delta", "text": "a"}}}) == "a"
     system, prompt = bridge.build_prompt([{"role": "user", "content": "问"}])
-    assert system == bridge.DEFAULT_SYSTEM and prompt == "问"
+    assert system == bridge.DEFAULT_SYSTEM + bridge.ANSWER_RULE and prompt == "问"
 
 
 def test_leading_draft_reasoning_is_not_shown():
@@ -135,12 +135,17 @@ def test_leading_draft_reasoning_is_not_shown():
     assert bridge.strip_thinking(" <thinking>a</thinking>\n<reasoning>b</reasoning>正文<reasoning>留着</reasoning>") \
         == "正文<reasoning>留着</reasoning>"  # 只去掉开头的；正文中间出现的不动
     assert bridge.strip_thinking("普通回答") == "普通回答"
+    assert bridge.strip_thinking("<thinking_mode>auto</thinking_mode>\n\nOK") == "OK"
 
     def stream(pieces: list[str]) -> str:
-        f = bridge.LeadingThinkingFilter()
+        f = bridge.AnswerStream()
         return "".join(f.feed(p) for p in pieces) + f.flush()
 
-    assert stream(["<rea", "soning>草", "稿</reas", "oning>正", "文"]) == "正文"
-    assert stream(["正", "文<reasoning>x</reasoning>"]) == "正文<reasoning>x</reasoning>"
-    assert stream(["<", "5 的数"]) == "<5 的数"  # 只是以小于号开头，不是标签
-    assert stream(["<reasoning>没写完"]) == "<reasoning>没写完"  # 一直没结束：最后原样给出，不吞掉内容
+    # 正式回答放在 <answer> 里：前面的草稿、后面的多余内容都不外送
+    assert bridge.extract_answer("Plan: write 3 parts.<answer>\n# 报告\n正文\n</answer>多余") == "# 报告\n正文"
+    assert bridge.extract_answer("<answer>没有结束标签") == "没有结束标签"
+    assert bridge.extract_answer("<reasoning>草稿</reasoning>没加标签的回答") == "没加标签的回答"
+    assert stream(["Plan: wri", "te.<ans", "wer>\n# 报", "告\n正文</ans", "wer>多余"]) == "# 报告\n正文"
+    assert stream(["<answer>a < b 且 c </", "d></answer>"]) == "a < b 且 c </d>"  # 像标签但不是结束标签的照常放行
+    assert stream(["<answer>写到一半"]) == "写到一半"
+    assert stream(["<thinking_mode>auto</thinking_mode>\n\n没加", "标签"]) == "没加标签"  # 没按要求加标签：最后整段给出
