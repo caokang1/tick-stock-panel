@@ -189,12 +189,10 @@ class LiveService:
         return payload
 
     @staticmethod
-    def saved_backtest(strategy_id: str) -> dict[str, Any]:
+    def saved_backtest(strategy_id: str) -> dict[str, Any] | None:
+        """这个策略上次保存的回测结果；还没有回测过返回 None（不算错误）。策略不存在才报“找不到”。"""
         strategy_store.get_strategy(strategy_id)
-        result = result_store.load(strategy_id)
-        if result is None:
-            raise NotFoundError("这个策略还没有保存过回测结果。")
-        return result
+        return result_store.load(strategy_id)
 
     # ---------------- 今日提醒、模拟账户 ----------------
     def today(self) -> dict[str, Any]:

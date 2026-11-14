@@ -374,8 +374,20 @@ export function initialTradeForm(mode: TradeMode, today: string, todo?: RealTodo
   if (position && mode === 'edit') {
     return { code: position.code, shares: String(position.shares), price: String(position.buy_price), date: position.buy_date }
   }
-  if (position) return { code: position.code, shares: String(position.shares), price: '', date: today }
-  return { code: '', shares: '', price: '', date: today }
+  // 手动记一笔时默认填最近的一个工作日：周末没有交易，默认填周末只会让人多改一次
+  const day = lastWeekday(today)
+  if (position) return { code: position.code, shares: String(position.shares), price: '', date: day }
+  return { code: '', shares: '', price: '', date: day }
+}
+
+/** 这一天是周六、周日时退回到周五，其余原样返回（节假日这里不知道，仍要自己改） */
+export function lastWeekday(day: string): string {
+  const [y, m, d] = day.split('-').map(Number)
+  const date = new Date(Date.UTC(y, m - 1, d))
+  if (Number.isNaN(date.getTime())) return day
+  const back = date.getUTCDay() === 6 ? 1 : date.getUTCDay() === 0 ? 2 : 0
+  date.setUTCDate(date.getUTCDate() - back)
+  return date.toISOString().slice(0, 10)
 }
 
 /** 填的内容有问题时返回说明，没问题返回 null */

@@ -332,7 +332,7 @@ def build_router(background: bool = True) -> APIRouter:
         return run(live(request).backtest, body.model_dump())
 
     @router.get("/strategies/{strategy_id}/backtest")
-    def saved_backtest(strategy_id: str, request: Request) -> dict[str, Any]:
+    def saved_backtest(strategy_id: str, request: Request) -> dict[str, Any] | None:
         return run(live(request).saved_backtest, strategy_id)
 
     # ---------------- 今日提醒、模拟账户 ----------------

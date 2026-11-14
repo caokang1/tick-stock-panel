@@ -2,7 +2,7 @@ import { useId, useState, type FormEvent } from 'react'
 import { Modal } from '@/components/Modal'
 import type { RealPosition, RealTodo, TradeInput } from './client'
 import {
-  TRADE_TITLE, capitalError, initialTradeForm, isSellMode, money, needsCode, needsShares, todayText, tradeFormError,
+  TRADE_TITLE, capitalError, initialTradeForm, isSellMode, money, needsCode, needsShares, todayText, toPanelSymbol, tradeFormError,
   tradeInput, type TradeDialogForm, type TradeMode,
 } from './logic'
 import { BUTTON, ErrorNote, INPUT, PRIMARY } from './ui'
@@ -56,7 +56,7 @@ export function TradeDialog({ mode, todo, position, saving, onSubmit, onClose }:
         ) : (
           <div className={ROW}>
             股票
-            <span className="text-foreground">{stock ? `${stock.name || stock.code}（${stock.code}）` : ''}</span>
+            <span className="text-foreground">{stock ? `${stock.name || stock.code}（${toPanelSymbol(stock.code)}）` : ''}</span>
           </div>
         )}
         {needsShares(mode) ? (

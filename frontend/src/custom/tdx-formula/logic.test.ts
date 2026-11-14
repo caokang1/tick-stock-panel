@@ -3,7 +3,7 @@ import type { Block, Options, RealPosition, RealTodo, SourcePolicy } from './cli
 import {
   DATA_SETTINGS_PATH, FREECN_SOURCE, capText, capabilityLabel, capitalError, conditionFromParsed, conditionName, configFromForm, costFromInput, costInput,
   costText, curveRange, dailyCapText, defaultTab, defaultUniverse, etaText, formFromConfig, fractionOf, frequencyText,
-  initialCashError, initialTradeForm, limitsBody, limitsForm, linePath, money, needsCode, needsShares, newRankFactor,
+  initialCashError, initialTradeForm, lastWeekday, limitsBody, limitsForm, linePath, money, needsCode, needsShares, newRankFactor,
   paramValue, pct, pendingText, percentInput, progressPercent, realtimeIntervalError, rankFromForm, rankToForm, runTimeError, sourceState,
   statusLabel, timingFromForm, timingToForm, todayText, tone, toPanelSymbol, tradeFormError, tradeFromForm, tradeInput,
   tradeToForm, withParam,
@@ -252,6 +252,11 @@ describe('实际持仓的成交记录', () => {
     expect(sell.price).toBe('')
     expect(sell.date).toBe('2024-06-10')
     expect(initialTradeForm('add', '2024-06-10')).toEqual({ code: '', shares: '', price: '', date: '2024-06-10' })
+    // 周末打开时默认填周五
+    expect(initialTradeForm('add', '2024-06-08').date).toBe('2024-06-07')
+    expect(initialTradeForm('sell', '2024-06-09', undefined, position).date).toBe('2024-06-07')
+    expect(lastWeekday('2024-06-07')).toBe('2024-06-07')
+    expect(lastWeekday('2024-07-01')).toBe('2024-07-01')
   })
 
   it('哪种用法要填代码、股数', () => {

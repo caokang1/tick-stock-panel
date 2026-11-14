@@ -169,6 +169,16 @@ def _write_daily(code: str, df: pd.DataFrame) -> None:
         _note_latest(bars.max().date())
 
 
+def _off_calendar(days: pd.Index) -> np.ndarray:
+    """哪些日期落在交易日历的范围之内、却不是交易日（比如来源多给了一个周日）。日历之外的日期不判断。"""
+    calendar = read_calendar()
+    values = days.to_numpy().astype("datetime64[D]")
+    if len(calendar) == 0 or len(values) == 0:
+        return np.zeros(len(values), dtype=bool)
+    covered = (values >= calendar[0]) & (values <= calendar[-1])
+    return covered & ~np.isin(values, calendar)
+
+
 def merge_daily(code: str, new: pd.DataFrame) -> int:
     """把新数据并入某只股票的文件：按日期对齐，新数据里非空的值覆盖旧值，其余保留。返回文件的总行数。
 
@@ -179,6 +189,7 @@ def merge_daily(code: str, new: pd.DataFrame) -> int:
         incoming = new.loc[:, ["date", *cols]].copy()
         incoming["date"] = to_dates(incoming["date"].to_numpy())
         incoming = incoming.dropna(subset=["date"]).drop_duplicates("date", keep="last").set_index("date")
+        incoming = incoming[~_off_calendar(incoming.index)]
         if "is_st" in incoming.columns:
             incoming["is_st"] = incoming["is_st"].astype(object)
         old = read_daily(code)

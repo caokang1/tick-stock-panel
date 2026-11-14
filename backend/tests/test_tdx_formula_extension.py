@@ -577,3 +577,45 @@ def test_trigger_runs_the_tsp_pipeline_on_the_app_event_loop(env, monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         runner.join(timeout=5)
         loop.close()
+
+
+# ---------------- 小毛病的回归 ----------------
+def test_a_strategy_never_backtested_returns_nothing_instead_of_an_error(live_env):
+    client, _ = live_env
+    sid = new_strategy(client)
+    answer = client.get(f"{PREFIX}/strategies/{sid}/backtest")
+    assert answer.status_code == 200 and answer.json() is None
+    assert client.get(f"{PREFIX}/strategies/no-such-id/backtest").status_code == 404  # 策略不存在才是“找不到”
+
+
+def test_rows_with_zero_prices_or_off_calendar_dates_are_not_stored(tmp_path):
+    import numpy as np
+    import pandas as pd
+
+    from app.custom.tdx_formula.ql.core import config as ql_config
+    from app.custom.tdx_formula.ql.data import store as ql_store
+    from app.custom.tdx_formula.ql.data.interface import Capability
+    from app.custom.tdx_formula.ql.data.models import normalize_frame
+
+    # 价格是 0 的行（来源在没有交易的日子偶尔会给）整行不要
+    raw = pd.DataFrame({
+        "date": ["2024-11-05", "2024-11-06", "2024-11-07"], "code": ["sh.688143"] * 3,
+        "open": [27.0, 0.0, 27.9], "high": [27.8, 0.0, 28.2], "low": [26.9, 0.0, 27.5],
+        "close": [27.6, 27.58, 28.0], "preclose": [27.1, 27.6, 27.58],
+        "volume": [1e6, 0.0, 1.2e6], "amount": [2.7e7, 0.0, 3.3e7], "suspended": [False, False, False],
+    })
+    cleaned = normalize_frame(Capability.STOCK_DAILY, raw)
+    assert [str(d)[:10] for d in cleaned["date"]] == ["2024-11-05", "2024-11-07"]
+
+    # 落在交易日历范围之内、却不是交易日的日期不写进文件；日历还没覆盖到的新日期照常写
+    ql_config.set_data_dir(tmp_path / "freecn")
+    (tmp_path / "freecn" / "market" / "daily").mkdir(parents=True)
+    ql_store.write_calendar(pd.Series(pd.to_datetime(["2021-06-24", "2021-06-25", "2021-06-28"])))
+    frame = pd.DataFrame({
+        "date": pd.to_datetime(["2021-06-25", "2021-06-27", "2021-06-28", "2021-06-29"]),
+        "open": [1.0, 1.0, 1.1, 1.2], "high": [1.1, 1.0, 1.2, 1.3], "low": [0.9, 1.0, 1.0, 1.1],
+        "close": [1.0, 1.0, 1.1, 1.2], "volume": np.full(4, 1e5), "amount": np.full(4, 1e5),
+    })
+    ql_store.merge_daily("sz.300431", frame)
+    stored = ql_store.read_daily("sz.300431")
+    assert [str(d)[:10] for d in stored["date"]] == ["2021-06-25", "2021-06-28", "2021-06-29"]

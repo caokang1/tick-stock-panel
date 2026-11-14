@@ -76,6 +76,10 @@ def normalize_frame(capability: Capability, df: pd.DataFrame) -> pd.DataFrame:
     if "date" in out.columns:
         out = out[out["date"].notna()]
         keys = ["date", "code"] if "code" in out.columns else ["date"]
+        prices = [c for c in ("open", "high", "low", "close") if c in out.columns]
+        if prices:
+            # 来源偶尔会给出价格是 0 的行（实际上那天没有交易）。0 不是价格，这样的行整行不要，按没有行情处理
+            out = out[~(out[prices] <= 0).any(axis=1)]
         out = out.drop_duplicates(keys, keep="last").sort_values(keys).reset_index(drop=True)
     out.attrs = attrs
     return out
