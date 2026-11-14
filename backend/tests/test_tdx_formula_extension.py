@@ -176,3 +176,17 @@ def test_blocks_lists_the_indicator_library(env):
     client, _ = env
     blocks = client.get(f"{PREFIX}/blocks").json()
     assert len(blocks) >= 30 and {"id", "name", "formula", "params", "category"} <= set(blocks[0])
+
+
+def test_a_fake_repository_never_becomes_a_directory_on_disk(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    monkeypatch.chdir(tmp_path)
+    app = FastAPI()
+    app.state.repo = MagicMock()
+    app.include_router(build_router(repo_root=tmp_path / "tsp"))
+    with TestClient(app) as client:
+        assert client.get(f"{PREFIX}/status").status_code == 503
+        r = client.post(f"{PREFIX}/saved", json={"name": "x", "conditions": [ABOVE_MA]})
+        assert r.status_code == 503
+    assert list(tmp_path.iterdir()) == []

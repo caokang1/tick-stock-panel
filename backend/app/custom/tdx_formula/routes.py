@@ -60,7 +60,11 @@ def build_router(repo_root: Path | None = None) -> APIRouter:
         repo = getattr(request.app.state, "repo", None)
         if repo is None:
             raise HTTPException(status_code=503, detail="数据仓库还没有就绪，请稍后再试。")
-        data_dir = Path(repo.store.data_dir)
+        raw = getattr(getattr(repo, "store", None), "data_dir", None)
+        if not isinstance(raw, (str, Path)):
+            # 数据目录不是一个真正的路径（例如测试里用假对象顶替了数据仓库）：不拿它去建目录
+            raise HTTPException(status_code=503, detail="数据目录还没有就绪，请稍后再试。")
+        data_dir = Path(raw)
         key = str(data_dir)
         if key not in services:
             root = data_dir / "user_data" / "extensions" / "tdx_formula"
