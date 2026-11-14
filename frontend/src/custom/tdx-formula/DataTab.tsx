@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FolderInput, RefreshCw, Save, Square } from 'lucide-react'
 import { toast } from '@/components/Toast'
 import { tdxApi, tdxKeys, type DataProgress, type Status } from './client'
-import { etaText, progressPercent, realtimeIntervalError, runTimeError, todayText } from './logic'
+import { boardsSummary, etaText, progressPercent, realtimeIntervalError, runTimeError, todayText } from './logic'
 import { SourcesPanel } from './SourcesPanel'
 import { BUTTON, CARD, ErrorNote, INPUT, PRIMARY, WarnNote, errorText } from './ui'
 
@@ -137,6 +137,7 @@ export function DataTab() {
 
       <ScheduleSection />
       <RealtimeSection />
+      <BoardsSection busy={running} />
       <ImportSection disabled={running} />
 
       <SourcesPanel
@@ -276,6 +277,52 @@ function RealtimeSection() {
               把上面“能力路由”里的实时行情、五档盘口切到“免费公开来源”后生效，用的是腾讯的行情接口，只在交易时段取。
               一轮全市场约 7 次请求；TSP 自己的刷新间隔设得再短，这里设的秒数之内也只给上一轮的结果，不会多发请求。
               五档盘口直接用同一轮快照里带的数据。免费接口比付费行情慢几秒，覆盖沪深的股票、ETF 和指数，不含北交所。
+            </p>
+          </>
+        )}
+    </section>
+  )
+}
+
+function BoardsSection({ busy }: { busy: boolean }) {
+  const qc = useQueryClient()
+  const boards = useQuery({
+    queryKey: tdxKeys.dataBoards, queryFn: tdxApi.dataBoards, staleTime: 30_000,
+    refetchInterval: query => (query.state.data?.running ? 2000 : false),
+  })
+  const [error, setError] = useState<string | null>(null)
+  const update = useMutation({
+    mutationFn: tdxApi.updateDataBoards,
+    onSuccess: next => { qc.setQueryData(tdxKeys.dataBoards, next); setError(null) },
+    onError: e => setError(errorText(e)),
+  })
+  const data = boards.data
+
+  return (
+    <section className={`${CARD} space-y-2`}>
+      <h2 className={H2}>行业和概念</h2>
+      {boards.isLoading ? <p className="text-xs text-muted">正在加载…</p>
+        : boards.error || !data ? (
+          <div className="space-y-2">
+            <ErrorNote>行业和概念的情况没有取到：{errorText(boards.error)}</ErrorNote>
+            <button className={BUTTON} onClick={() => void boards.refetch()}>再试一次</button>
+          </div>
+        ) : (
+          <>
+            <p className="text-xs text-secondary">{boardsSummary(data)}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button className={PRIMARY} disabled={busy || data.running || update.isPending} onClick={() => update.mutate()}>
+                <RefreshCw className="h-3.5 w-3.5" />{data.running ? '更新中…' : '更新行业和概念'}
+              </button>
+              {busy && <span className="text-[11px] text-muted">行情正在下载或更新，结束后才能更新这一项</span>}
+            </div>
+            {error && <ErrorNote>{error}</ErrorNote>}
+            {!data.running && data.message && <p className="text-[11px] text-muted">{data.message}</p>}
+            <p className={NOTE}>
+              给 TSP 的“行业分析”“概念分析”用：从东方财富取每只股票所属的行业和概念，写进 TSP 的行业表和概念表，
+              一次约 200 次请求、几分钟。之后每 {data.refresh_days} 天左右自动更新一次（放在周末）。
+              行业用的是东方财富的行业分类（二级，如“白酒”），在 TSP 里显示为“所属行业”；
+              概念只取有明确入选理由的题材概念。只有“现在属于哪些板块”，没有历史。
             </p>
           </>
         )}

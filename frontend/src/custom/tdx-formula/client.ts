@@ -131,6 +131,20 @@ export interface DataSchedule {
   tsp_sync_message: string | null
 }
 
+/** 行业和概念（写进 TSP 的行业表、概念表）的更新情况 */
+export interface BoardsInfo {
+  running: boolean
+  page: number
+  pages: number
+  updated_at: string | null
+  stocks_with_industry: number | null
+  stocks_with_concept: number | null
+  industries: number | null
+  concepts: number | null
+  message: string | null
+  refresh_days: number
+}
+
 /** 实时行情：两轮全市场快照之间隔多少秒 */
 export interface RealtimeSetting {
   interval_seconds: number
@@ -510,6 +524,8 @@ export const tdxApi = {
   startUpdate: () => request<DataProgress>('data/update', 'POST'),
   /** 从已有的行情目录拷一份过来；文件多的时候要几分钟 */
   importData: (path: string) => request<Status & { copied: number }>('data/import', 'POST', { path }, 600_000),
+  dataBoards: () => request<BoardsInfo>('data/boards'),
+  updateDataBoards: () => request<BoardsInfo>('data/boards/update', 'POST'),
   dataRealtime: () => request<RealtimeSetting>('data/realtime'),
   setDataRealtime: (interval_seconds: number) => request<RealtimeSetting>('data/realtime', 'PUT', { interval_seconds }),
   dataSchedule: () => request<DataSchedule>('data/schedule'),
@@ -583,4 +599,5 @@ export const tdxKeys = {
   dataProgress: [...ROOT, 'data', 'progress'] as const,
   dataSchedule: [...ROOT, 'data', 'schedule'] as const,
   dataRealtime: [...ROOT, 'data', 'realtime'] as const,
+  dataBoards: [...ROOT, 'data', 'boards'] as const,
 }

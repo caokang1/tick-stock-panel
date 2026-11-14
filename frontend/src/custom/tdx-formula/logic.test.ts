@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Block, Options, RealPosition, RealTodo, SourcePolicy } from './client'
 import {
-  DATA_SETTINGS_PATH, FREECN_SOURCE, capText, capabilityLabel, capitalError, conditionFromParsed, conditionName, configFromForm, costFromInput, costInput,
+  DATA_SETTINGS_PATH, FREECN_SOURCE, boardsSummary, capText, capabilityLabel, capitalError, conditionFromParsed, conditionName, configFromForm, costFromInput, costInput,
   costText, curveRange, dailyCapText, defaultTab, defaultUniverse, etaText, formFromConfig, fractionOf, frequencyText,
   initialCashError, initialTradeForm, lastWeekday, limitsBody, limitsForm, linePath, money, needsCode, needsShares, newRankFactor,
   paramValue, pct, pendingText, percentInput, progressPercent, realtimeIntervalError, rankFromForm, rankToForm, runTimeError, sourceState,
@@ -319,6 +319,15 @@ describe('「数据」页', () => {
     cooldown_minutes_on_reject: 360, count_pages_as_requests: true, official_daily_limit: 50000,
     official_max_concurrent: 1,
   }
+
+  it('行业和概念的情况：没取过、更新中、取过', () => {
+    const base = { running: false, page: 0, pages: 0, updated_at: null, stocks_with_industry: null, stocks_with_concept: null, industries: null, concepts: null }
+    expect(boardsSummary(base)).toContain('还没有取过')
+    expect(boardsSummary({ ...base, running: true })).toBe('正在更新…')
+    expect(boardsSummary({ ...base, running: true, page: 12, pages: 207 })).toBe('正在更新，第 12 / 207 页…')
+    expect(boardsSummary({ ...base, updated_at: '2026-11-14T17:20:05', stocks_with_industry: 5200, stocks_with_concept: 4800, industries: 130, concepts: 420 }))
+      .toBe('上次更新 2026-11-14 17:20：5,200 只股票有行业（共 130 个行业），4,800 只股票有概念（共 420 个概念）。')
+  })
 
   it('实时行情的快照间隔：留空、不是数、超出范围都说明原因', () => {
     expect(realtimeIntervalError('', 15, 3600)).toBe('请填一个秒数')

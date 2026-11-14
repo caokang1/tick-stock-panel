@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from .boards import BoardService
 from .data_service import DataService
 from .live_service import LiveService
 from .ql.core import clock
@@ -145,6 +146,15 @@ def build_router(background: bool = True) -> APIRouter:
     services: dict[str, tuple[FormulaService, LiveService, DataService]] = {}
     guard = threading.Lock()
     tsp_sync = TspSync()
+    board_services: dict[str, BoardService] = {}
+
+    def boards_of(app: Any) -> tuple[BoardService, Path]:
+        pair(app)  # 确保数据目录、限流器都已就绪
+        data_dir = Path(app.state.repo.store.data_dir)
+        with guard:
+            service = board_services.setdefault(str(data_dir), BoardService(data_dir / "freecn"))
+        service.ensure_labels(data_dir)
+        return service, data_dir
 
     def pair(app: Any) -> tuple[FormulaService, LiveService, DataService]:
         repo = getattr(app.state, "repo", None)
@@ -197,6 +207,10 @@ def build_router(background: bool = True) -> APIRouter:
                         data_dir = Path(app.state.repo.store.data_dir)
                         if not data_service.busy() and tsp_sync.due(data_dir, latest, now):
                             tsp_sync.trigger(app, event_loop, latest, now)
+                        # 行业和概念：每周更新一次，不和行情的下载、更新同时跑
+                        board_service, _ = boards_of(app)
+                        if latest is not None and not data_service.busy() and board_service.due(now):
+                            board_service.start(app, event_loop, data_dir)
                     except HTTPException:
                         pass  # 数据仓库还没就绪，下一轮再看
                     except Exception:
@@ -248,6 +262,19 @@ def build_router(background: bool = True) -> APIRouter:
     @router.post("/data/import")
     def data_import(body: ImportRequest, request: Request) -> dict[str, Any]:
         return run(formulas(request).import_market, body.path)
+
+    @router.get("/data/boards")
+    def data_boards(request: Request) -> dict[str, Any]:
+        return boards_of(request.app)[0].info()
+
+    @router.post("/data/boards/update")
+    async def data_boards_update(request: Request) -> dict[str, Any]:
+        service, data_dir = boards_of(request.app)
+        if data(request).busy():
+            raise HTTPException(status_code=409, detail="行情正在下载或更新，等它结束后再更新板块数据。")
+        if not service.start(request.app, asyncio.get_running_loop(), data_dir):
+            raise HTTPException(status_code=409, detail="板块数据已经在更新中。")
+        return service.info()
 
     @router.get("/data/realtime")
     def data_realtime(request: Request) -> dict[str, Any]:

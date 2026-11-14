@@ -578,6 +578,19 @@ export function limitsBody(form: LimitsForm, policy: SourcePolicy): Parsed<Sourc
   return { ok: true, value: body }
 }
 
+/** 行业和概念现在是什么情况，一句话 */
+export function boardsSummary(info: {
+  running: boolean; page: number; pages: number; updated_at: string | null
+  stocks_with_industry: number | null; stocks_with_concept: number | null
+  industries: number | null; concepts: number | null
+}): string {
+  if (info.running) return info.pages > 0 ? `正在更新，第 ${info.page} / ${info.pages} 页…` : '正在更新…'
+  if (!info.updated_at) return '还没有取过。点“更新行业和概念”取一次，大约几分钟。'
+  const n = (v: number | null): string => (v ?? 0).toLocaleString('en-US')
+  return `上次更新 ${info.updated_at.replace('T', ' ').slice(0, 16)}：${n(info.stocks_with_industry)} 只股票有行业（共 ${n(info.industries)} 个行业），`
+    + `${n(info.stocks_with_concept)} 只股票有概念（共 ${n(info.concepts)} 个概念）。`
+}
+
 /** 实时行情的快照间隔填得对不对；对返回 null */
 export function realtimeIntervalError(raw: string, min: number, max: number): string | null {
   const value = numberOrNull(raw)

@@ -619,3 +619,127 @@ def test_rows_with_zero_prices_or_off_calendar_dates_are_not_stored(tmp_path):
     ql_store.merge_daily("sz.300431", frame)
     stored = ql_store.read_daily("sz.300431")
     assert [str(d)[:10] for d in stored["date"]] == ["2021-06-25", "2021-06-28", "2021-06-29"]
+
+
+# ---------------- 行业和概念（东方财富数据中心；这里用造出来的返回，不联网） ----------------
+def board_row(symbol, name, board, precise=None, kind=None, level=None):
+    return {"SECUCODE": symbol, "SECURITY_NAME_ABBR": name, "BOARD_NAME": board, "IS_PRECISE": precise,
+            "BOARD_TYPE": kind, "BOARD_LEVEL": level}
+
+
+def test_board_rows_become_one_industry_and_a_concept_list_per_stock():
+    from app.custom.tdx_formula import boards
+
+    rows = [
+        board_row("600519.SH", "贵州茅台", "食品饮料", kind="行业", level="1"),
+        board_row("600519.SH", "贵州茅台", "白酒Ⅱ", kind="行业", level="2"),
+        board_row("600519.SH", "贵州茅台", "白酒Ⅲ", kind="行业", level="3"),
+        board_row("600519.SH", "贵州茅台", "贵州板块", "0", kind="板块"),      # 地域：不要
+        board_row("600519.SH", "贵州茅台", "超级品牌", "1"),
+        board_row("600519.SH", "贵州茅台", "白酒", "1"),
+        board_row("600519.SH", "贵州茅台", "HS300_", "0"),                     # 指数成份：不算概念
+        board_row("600519.SH", "贵州茅台", "大盘股"),                           # 风格标签：不算概念
+        board_row("000001.SZ", "平安银行", "银行", kind="行业", level="1"),     # 只有一级行业
+        board_row("000001.SZ", "平安银行", "跨境支付", "1"),
+        board_row("AAPL.US", "苹果", "消费电子", "1"),                          # 不是沪深京的代码：跳过
+    ]
+    concepts, industries = boards.build_tables(rows)
+    assert concepts == [
+        {"股票代码": "000001.SZ", "股票简称": "平安银行", "所属概念": "跨境支付"},
+        {"股票代码": "600519.SH", "股票简称": "贵州茅台", "所属概念": "白酒;超级品牌"},
+    ]
+    assert industries == [
+        {"股票代码": "000001.SZ", "股票简称": "平安银行", "所属同花顺行业": "银行"},
+        {"股票代码": "600519.SH", "股票简称": "贵州茅台", "所属同花顺行业": "白酒"},  # 二级，去掉末尾的 Ⅱ
+    ]
+
+
+def test_board_download_pages_through_the_limiter_and_stops_on_refusal(env):
+    import json as _json
+
+    from app.custom.tdx_formula import boards
+    from app.custom.tdx_formula.ql.core.errors import SourceRejected
+    from app.custom.tdx_formula.ql.data import runtime
+
+    client, _ = env
+    client.get(f"{PREFIX}/data/sources")  # 让扩展把数据目录和限流器建好
+    calls: list[str] = []
+    state = {"status": 200}
+
+    def fetch(params, timeout):
+        calls.append(params["pageNumber"])
+        if state["status"] != 200:
+            return state["status"], ""
+        row = board_row(f"60000{params['pageNumber']}.SH", "某股", "白酒", "1")
+        return 200, _json.dumps({"success": True, "result": {"pages": 3, "data": [row]}})
+
+    boards.set_fetch(fetch)
+    runtime.set_sleep(lambda seconds: None)
+    try:
+        seen: list[tuple[int, int]] = []
+        rows = boards.download(lambda done, total: seen.append((done, total)))
+        assert calls == ["1", "2", "3"] and len(rows) == 3 and seen == [(1, 3), (2, 3), (3, 3)]
+        calls.clear()
+        state["status"] = 403
+        with pytest.raises(SourceRejected):
+            boards.download()
+        assert calls == ["1"]  # 被拒绝后不重试、不接着取
+    finally:
+        boards.set_fetch(None)
+        runtime.set_sleep(None)
+
+
+def test_boards_are_refreshed_about_once_a_week(tmp_path, monkeypatch):
+    from datetime import datetime as _datetime
+    from datetime import timedelta as _timedelta
+
+    from app.custom.tdx_formula import boards
+
+    service = boards.BoardService(tmp_path)
+    saturday = _datetime(2024, 3, 16, 10, 0)
+    assert service.due(saturday) is True  # 从没取过
+    service._save(updated_at=(saturday - _timedelta(days=3)).isoformat())
+    assert service.due(saturday) is False  # 才 3 天
+    service._save(updated_at=(saturday - _timedelta(days=8)).isoformat())
+    assert service.due(saturday) is True  # 满 7 天后的周末
+    assert service.due(saturday - _timedelta(days=2)) is False  # 满 7 天但那天是周四（按周四算才 6 天）
+    wednesday = _datetime(2024, 3, 20, 10, 0)
+    service._save(updated_at=(wednesday - _timedelta(days=8)).isoformat())
+    assert service.due(wednesday) is False  # 工作日先不动，等周末
+    service._save(updated_at=(wednesday - _timedelta(days=11)).isoformat())
+    assert service.due(wednesday) is True  # 已经 10 天以上，不等了
+    service._last_attempt = wednesday - _timedelta(hours=1)
+    assert service.due(wednesday) is False  # 刚试过（失败后隔几小时再试）
+    info = service.info()
+    assert info["running"] is False and info["refresh_days"] == 7 and info["updated_at"]
+
+
+def test_boards_endpoint_reports_the_state(env):
+    client, _ = env
+    info = client.get(f"{PREFIX}/data/boards").json()
+    assert info["running"] is False and info["updated_at"] is None and info["message"] is None
+
+
+def test_board_tables_are_relabelled_to_match_the_real_source(tmp_path):
+    from app.custom.tdx_formula import boards
+    from app.services.ext_data import ExtConfigStore
+    from app.services.ext_presets import _concept_preset, _industry_preset
+
+    store = ExtConfigStore(tmp_path)
+    store.create(_industry_preset())
+    store.create(_concept_preset())
+    boards.relabel(tmp_path)
+    industry = store.get("ext_hy_ths")
+    field = next(f for f in industry.fields if f.name == "所属同花顺行业")
+    assert field.label == "所属行业"  # 给人看的名字改了；内部名字不动，TSP 别处按它取数
+    assert "东方财富" in industry.description and "fuyao" not in industry.description
+    assert "东方财富" in store.get("ext_gn_ths").description
+
+    # 用户自己改过的显示名称不覆盖
+    field.label = "我的行业"
+    industry.description = "我自己接的行业"
+    store.upsert(industry)
+    boards.relabel(tmp_path)
+    again = store.get("ext_hy_ths")
+    assert next(f for f in again.fields if f.name == "所属同花顺行业").label == "我的行业"
+    assert again.description == "我自己接的行业"
