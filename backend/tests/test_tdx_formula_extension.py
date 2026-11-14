@@ -375,7 +375,7 @@ def test_sources_show_limits_and_refuse_values_above_the_official_caps(env):
     client, _ = env
     body = client.get(f"{PREFIX}/data/sources").json()
     names = [s["name"] for s in body["sources"]]
-    assert set(names) == {"akshare_sina", "akshare_tx", "akshare_em", "baostock"}
+    assert set(names) == {"akshare_sina", "akshare_tx", "akshare_em", "baostock", "tencent_quote"}
     bao = next(s for s in body["sources"] if s["name"] == "baostock")
     assert bao["label"].startswith("BaoStock") and bao["state"] == "ok" and bao["today_requests"] == 0
     # 默认值和 quant-lab 一样：严格串行、每天 20000 次（官方上限 50000）
@@ -393,6 +393,16 @@ def test_sources_show_limits_and_refuse_values_above_the_official_caps(env):
     assert unknown.status_code == 400
     again = client.get(f"{PREFIX}/data/sources").json()  # 被拒绝的修改没有留下痕迹
     assert next(s for s in again["sources"] if s["name"] == "baostock")["policy"]["daily_request_cap"] == 10000
+
+
+def test_realtime_snapshot_interval_has_a_floor(env):
+    client, _ = env
+    base = client.get(f"{PREFIX}/data/realtime").json()
+    assert base == {"interval_seconds": 60.0, "interval_min": 15.0, "interval_max": 3600.0, "interval_default": 60.0}
+    assert client.put(f"{PREFIX}/data/realtime", json={"interval_seconds": 30}).json()["interval_seconds"] == 30.0
+    too_fast = client.put(f"{PREFIX}/data/realtime", json={"interval_seconds": 5})
+    assert too_fast.status_code == 400 and "15" in too_fast.json()["detail"]
+    assert client.get(f"{PREFIX}/data/realtime").json()["interval_seconds"] == 30.0  # 被拒绝的修改没有留下痕迹
 
 
 def test_schedule_time_must_be_after_the_data_is_ready(env):

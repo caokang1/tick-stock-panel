@@ -127,6 +127,14 @@ export interface DataSchedule {
   run_time_max: string
 }
 
+/** 实时行情：两轮全市场快照之间隔多少秒 */
+export interface RealtimeSetting {
+  interval_seconds: number
+  interval_min: number
+  interval_max: number
+  interval_default: number
+}
+
 export interface StatRow {
   entry: 'next_open' | 'same_close'
   hold: number
@@ -498,6 +506,8 @@ export const tdxApi = {
   startUpdate: () => request<DataProgress>('data/update', 'POST'),
   /** 从已有的行情目录拷一份过来；文件多的时候要几分钟 */
   importData: (path: string) => request<Status & { copied: number }>('data/import', 'POST', { path }, 600_000),
+  dataRealtime: () => request<RealtimeSetting>('data/realtime'),
+  setDataRealtime: (interval_seconds: number) => request<RealtimeSetting>('data/realtime', 'PUT', { interval_seconds }),
   dataSchedule: () => request<DataSchedule>('data/schedule'),
   setDataSchedule: (run_time: string) => request<DataSchedule>('data/schedule', 'PUT', { run_time }),
 
@@ -567,4 +577,5 @@ export const tdxKeys = {
   dataSources: [...ROOT, 'data', 'sources'] as const,
   dataProgress: [...ROOT, 'data', 'progress'] as const,
   dataSchedule: [...ROOT, 'data', 'schedule'] as const,
+  dataRealtime: [...ROOT, 'data', 'realtime'] as const,
 }

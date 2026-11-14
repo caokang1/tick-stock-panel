@@ -38,6 +38,10 @@ class SignalsRequest(ConditionsRequest):
     offset: int = Field(default=0, ge=0)
 
 
+class RealtimeUpdate(BaseModel):
+    interval_seconds: float
+
+
 class ImportRequest(BaseModel):
     path: str = Field(max_length=500)
 
@@ -231,6 +235,14 @@ def build_router(background: bool = True) -> APIRouter:
     @router.post("/data/import")
     def data_import(body: ImportRequest, request: Request) -> dict[str, Any]:
         return run(formulas(request).import_market, body.path)
+
+    @router.get("/data/realtime")
+    def data_realtime(request: Request) -> dict[str, Any]:
+        return run(data(request).realtime)
+
+    @router.put("/data/realtime")
+    def data_realtime_update(body: RealtimeUpdate, request: Request) -> dict[str, Any]:
+        return run(data(request).set_realtime_interval, body.interval_seconds)
 
     @router.get("/data/schedule")
     def data_schedule(request: Request) -> dict[str, Any]:

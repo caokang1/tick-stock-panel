@@ -53,6 +53,20 @@ cooldown_minutes_on_reject = 10
 count_pages_as_requests = false
 
 # 每种能力的来源优先级：排在前面的失败、被限制或正在冷却时，自动换下一个。
+# 腾讯的实时行情接口（盘中快照和买卖五档）。一次请求最多查 800 只，全市场一轮约 7 次请求。
+# 两轮全市场快照之间隔多久，见下面的 [realtime]。
+[sources.tencent_quote]
+enabled = true
+max_concurrent = 1
+daily_request_cap = 0
+min_interval_seconds = 1.0
+jitter_seconds = 0.3
+timeout_seconds = 15
+max_retries = 1
+stop_after_consecutive_failures = 5
+cooldown_minutes_on_reject = 30
+count_pages_as_requests = true
+
 [priority]
 stock_daily = ["akshare_sina", "akshare_tx", "akshare_em"]
 # 复权因子必须是"乘法"口径。实测东方财富和腾讯的后复权价不是简单乘一个因子得到的，
@@ -69,6 +83,10 @@ float_shares = ["akshare_sina", "baostock"]
 
 # 启动加速：把拼好的全市场行情在硬盘上另存一份（约 1.3 GB），下次启动直接读，不用从各只股票的文件重新拼。
 # 关掉可以省下这部分空间，代价是每次启动后第一次读行情要多等几秒到十几秒。
+# 实时行情：两轮全市场快照之间至少隔多少秒（15 到 3600）。TSP 问得再勤，这段时间内也只给上一轮的结果。
+[realtime]
+snapshot_interval_seconds = 60
+
 [storage]
 panel_cache = true
 

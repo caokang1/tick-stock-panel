@@ -1,7 +1,7 @@
 """免费公开来源数据源：把「通达信公式」扩展下载到本机的行情按 TSP 的数据契约读出来。
 
-这个 provider 自己不联网。取数、限速、续传、每日更新都在扩展里（app.custom.tdx_formula），
-这里只做翻译：
+日线和除权因子不联网：取数、限速、续传、每日更新都在扩展里（app.custom.tdx_formula），
+这里只做翻译（实时行情和五档盘口见 quotes.py，那两项是盘中直接向腾讯的行情接口要的）：
 
 - 代码写法 ``sh.600000`` ↔ ``600000.SH``；
 - 成交量：本机存的是股，TSP 要的是手（除以 100 取整）；
@@ -26,9 +26,11 @@ import polars as pl
 
 from app.data_providers.base import ProviderRequestError
 
+from . import quotes
+
 logger = logging.getLogger(__name__)
 
-_DATASETS = ("daily", "adj_factor")
+_DATASETS = ("daily", "adj_factor", "realtime", "depth5")
 _CHUNK = 200  # 每读这么多只股票交一批、报一次进度
 _DAILY_SCHEMA = {"symbol": pl.String, "date": pl.Date, "open": pl.Float64, "high": pl.Float64,
                  "low": pl.Float64, "close": pl.Float64, "volume": pl.Int64, "amount": pl.Float64}
@@ -98,9 +100,61 @@ class FreeCnProvider:
 
     def __init__(self) -> None:
         self.config = _Config()
+        self._snapshot = quotes.SnapshotCache()
 
     def close(self) -> None:  # loader 重建注册表时会对每个 provider 调 close；这里没有连接要关
-        return None
+        self._snapshot.clear()
+
+    # ---------------- 实时行情 ----------------
+    @staticmethod
+    def _listed_symbols() -> list[str]:
+        """全市场快照要查的股票：本机证券清单里还在上市的。"""
+        sec = _store().read_securities()
+        if len(sec) == 0:
+            return []
+        sec = sec[(sec["kind"] == "stock") & sec["delist_date"].isna()]
+        return [to_panel_symbol(code) for code in sec["code"].astype(str)]
+
+    def get_realtime(self) -> list[dict]:
+        """全市场实时快照。两轮之间至少隔配置的秒数（默认 60），间隔内只给上一轮的结果。失败返回空。"""
+        try:
+            rows = self._snapshot.rows(self._listed_symbols)
+        except Exception as e:  # noqa: BLE001 —— 契约：软失败，不打断轮询线程
+            logger.warning("免费来源实时行情拉取失败：%s", getattr(e, "message", e))
+            return []
+        return [row["quote"] for row in rows.values()]
+
+    def _quotes_of(self, symbols: list[str]) -> list[dict] | None:
+        """按代码补拉。快照里有的直接用，没有的才去要；失败返回 None。"""
+        cached = self._snapshot.peek()
+        found = [cached[s]["quote"] for s in symbols if s in cached]
+        missing = [s for s in symbols if s not in cached]
+        if missing:
+            try:
+                fetched = quotes.fetch_symbols(missing)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("免费来源按代码补拉行情失败：%s", getattr(e, "message", e))
+                return None
+            found += [row["quote"] for row in fetched.values()]
+        return found
+
+    def get_realtime_symbols(self, symbols: list[str], *, asset_type: str = "stock") -> list[dict] | None:
+        return self._quotes_of(list(symbols)) if symbols else []
+
+    def get_realtime_indices(self, symbols: list[str]) -> list[dict] | None:
+        return self._quotes_of(list(symbols)) if symbols else []
+
+    # ---------------- 五档盘口 ----------------
+    def get_depth_batch(self, symbols: list[str]) -> dict[str, dict]:
+        """买卖五档。刚取过的全市场快照里本来就带五档，在间隔内直接用，不多发请求。"""
+        cached = self._snapshot.peek()
+        out = {s: cached[s]["depth"] for s in symbols if s in cached and cached[s]["depth"]}
+        missing = [s for s in symbols if s not in cached]
+        if missing:
+            for symbol, row in quotes.fetch_symbols(missing).items():
+                if row["depth"]:
+                    out[symbol] = row["depth"]
+        return out
 
     # ---------------- 日线 ----------------
     def _bars(self, code: str, start: date, end: date, asset_type: str) -> pl.DataFrame | None:
@@ -210,11 +264,19 @@ class FreeCnProvider:
                 df = self.get_daily(syms, now - timedelta(days=30), now)
             elif dataset == "adj_factor":
                 df = self.get_adj_factors(syms, now - timedelta(days=365 * 3), now)
+            elif dataset in ("realtime", "depth5"):
+                fetched = quotes.fetch_symbols(syms)
+                if dataset == "realtime":
+                    rows = [row["quote"] for row in fetched.values()]
+                else:
+                    rows = [{"symbol": s, **row["depth"]} for s, row in fetched.items() if row["depth"]]
+                return {"provider": self.name, "dataset": dataset, "rows": len(rows),
+                        "columns": list(rows[0]) if rows else [], "preview": rows[:5]}
             else:
                 return {"provider": self.name, "dataset": dataset, "rows": 0,
-                        "error": "免费公开来源只提供日线和除权因子"}
-        except ProviderRequestError as e:
-            return {"provider": self.name, "dataset": dataset, "rows": 0, "error": str(e)}
+                        "error": "免费公开来源目前只提供日线、除权因子、实时行情和五档盘口"}
+        except Exception as e:  # noqa: BLE001 —— 试拉只报告结果，不让错误冒到页面外
+            return {"provider": self.name, "dataset": dataset, "rows": 0, "error": getattr(e, "message", str(e))}
         head = df.head(5).to_dicts()
         for row in head:  # date → ISO 字符串，保证能转成 JSON
             for k, v in list(row.items()):

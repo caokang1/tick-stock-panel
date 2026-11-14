@@ -566,6 +566,16 @@ export function limitsBody(form: LimitsForm, policy: SourcePolicy): Parsed<Sourc
   return { ok: true, value: body }
 }
 
+/** 实时行情的快照间隔填得对不对；对返回 null */
+export function realtimeIntervalError(raw: string, min: number, max: number): string | null {
+  const value = numberOrNull(raw)
+  if (value == null) return '请填一个秒数'
+  if (!Number.isFinite(value)) return '要填数字'
+  if (value < min) return `不能小于 ${min} 秒：取得太勤可能被来源限制访问`
+  if (value > max) return `不能大于 ${max} 秒`
+  return null
+}
+
 /** 每天自动更新的时间填得对不对；对返回 null */
 export function runTimeError(value: string, min: string, max: string): string | null {
   if (!/^\d{2}:\d{2}$/.test(value)) return '请填一个时间，例如 18:30'

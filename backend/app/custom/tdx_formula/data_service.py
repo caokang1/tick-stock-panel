@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 SOURCE_LABELS = {
     "baostock": "BaoStock（证券宝）", "akshare_em": "东方财富", "akshare_sina": "新浪财经", "akshare_tx": "腾讯财经",
+    "tencent_quote": "腾讯实时行情",
 }
 _STATE_MAP = {"normal": "ok", "cooling": "cooldown", "capped": "cap_reached", "disabled": "disabled",
               "halted": "cooldown"}
@@ -71,6 +72,16 @@ class DataService:
                 "defaults": defaults.get(o["name"], o["policy"]),
             })
         return {"sources": items, "priority": config["priority"], "libraries_ready": libraries_ready()}
+
+    def realtime(self) -> dict[str, Any]:
+        """实时行情两轮全市场快照之间的间隔（秒），和允许的范围。"""
+        return {"interval_seconds": ql_data.get_effective_config().realtime_interval,
+                "interval_min": data_config.REALTIME_INTERVAL_MIN, "interval_max": data_config.REALTIME_INTERVAL_MAX,
+                "interval_default": data_config.parse(data_config.load_default_raw()).realtime_interval}
+
+    def set_realtime_interval(self, seconds: float) -> dict[str, Any]:
+        data_config.update_realtime_interval(seconds)
+        return self.realtime()
 
     def update_source(self, name: str, changes: dict[str, Any]) -> dict[str, Any]:
         _, warnings = ql_data.update_source_policy(name, {k: v for k, v in changes.items() if v is not None})

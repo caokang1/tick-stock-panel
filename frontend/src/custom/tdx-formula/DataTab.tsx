@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FolderInput, RefreshCw, Save, Square } from 'lucide-react'
 import { toast } from '@/components/Toast'
 import { tdxApi, tdxKeys, type DataProgress, type Status } from './client'
-import { etaText, progressPercent, runTimeError, todayText } from './logic'
+import { etaText, progressPercent, realtimeIntervalError, runTimeError, todayText } from './logic'
 import { SourcesPanel } from './SourcesPanel'
 import { BUTTON, CARD, ErrorNote, INPUT, PRIMARY, WarnNote, errorText } from './ui'
 
@@ -136,6 +136,7 @@ export function DataTab() {
       </section>
 
       <ScheduleSection />
+      <RealtimeSection />
       <ImportSection disabled={running} />
 
       <SourcesPanel
@@ -214,6 +215,71 @@ function ProgressBox({ progress }: { progress: DataProgress }) {
       </p>
       {!updating && progress.message && <p className="text-[11px] text-muted">{progress.message}</p>}
     </div>
+  )
+}
+
+function RealtimeSection() {
+  const qc = useQueryClient()
+  const setting = useQuery({ queryKey: tdxKeys.dataRealtime, queryFn: tdxApi.dataRealtime, staleTime: 30_000 })
+  const [text, setText] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const save = useMutation({
+    mutationFn: tdxApi.setDataRealtime,
+    onSuccess: next => {
+      qc.setQueryData(tdxKeys.dataRealtime, next)
+      setText(null)
+      setError(null)
+      toast(`已保存，实时行情每 ${next.interval_seconds} 秒取一轮`, 'success')
+    },
+    onError: e => setError(errorText(e)),
+  })
+
+  const data = setting.data
+  const value = text ?? (data ? String(data.interval_seconds) : '')
+  function submit() {
+    if (!data) return
+    const problem = realtimeIntervalError(value, data.interval_min, data.interval_max)
+    setError(problem)
+    if (!problem) save.mutate(Number(value))
+  }
+
+  return (
+    <section className={`${CARD} space-y-2`}>
+      <h2 className={H2}>实时行情和五档盘口</h2>
+      {setting.isLoading ? <p className="text-xs text-muted">正在加载…</p>
+        : setting.error || !data ? (
+          <div className="space-y-2">
+            <ErrorNote>实时行情的设置没有取到：{errorText(setting.error)}</ErrorNote>
+            <button className={BUTTON} onClick={() => void setting.refetch()}>再试一次</button>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-secondary">
+              <label className="flex items-center gap-1.5">
+                每隔
+                <input
+                  type="number" value={value} min={data.interval_min} max={data.interval_max} step={5}
+                  onChange={e => { setText(e.target.value); setError(null) }}
+                  className={`${INPUT} w-24`}
+                />
+                秒取一轮全市场快照
+              </label>
+              <button className={PRIMARY} disabled={save.isPending || Number(value) === data.interval_seconds} onClick={submit}>
+                <Save className="h-3.5 w-3.5" />{save.isPending ? '保存中…' : '保存'}
+              </button>
+              <span className="text-[11px] text-muted">
+                可以设在 {data.interval_min} 到 {data.interval_max} 秒之间，默认 {data.interval_default} 秒
+              </span>
+            </div>
+            {error && <ErrorNote>{error}</ErrorNote>}
+            <p className={NOTE}>
+              把上面“能力路由”里的实时行情、五档盘口切到“免费公开来源”后生效，用的是腾讯的行情接口，只在交易时段取。
+              一轮全市场约 7 次请求；TSP 自己的刷新间隔设得再短，这里设的秒数之内也只给上一轮的结果，不会多发请求。
+              五档盘口直接用同一轮快照里带的数据。免费接口比付费行情慢几秒，覆盖沪深的股票、ETF 和指数，不含北交所。
+            </p>
+          </>
+        )}
+    </section>
   )
 }
 

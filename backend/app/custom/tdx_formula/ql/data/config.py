@@ -61,6 +61,7 @@ class DataConfig:
     priority: dict[Capability, tuple[str, ...]]
     download: DownloadOptions
     panel_cache: bool = True  # 是否把拼好的全市场行情在硬盘上另存一份，下次启动直接读
+    realtime_interval: float = 60.0  # 两轮全市场实时快照之间至少隔多少秒
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +74,7 @@ class DataConfig:
                 "data_ready_hour": self.download.data_ready_hour,
             },
             "storage": {"panel_cache": self.panel_cache},
+            "realtime": {"snapshot_interval_seconds": self.realtime_interval},
         }
 
 
@@ -120,7 +122,7 @@ def merge_raw(default: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
 
 def parse(raw: dict[str, Any]) -> DataConfig:
     """把合并后的原始配置转成 ``DataConfig``。类型不对、缺项、有不认识的项时抛 ``ConfigError``。"""
-    unknown = set(raw) - {"sources", "priority", "download", "storage"}
+    unknown = set(raw) - {"sources", "priority", "download", "storage", "realtime"}
     if unknown:
         raise ConfigError(f"配置里有不认识的部分：{', '.join(sorted(unknown))}")
     sources_raw = raw.get("sources")
@@ -146,8 +148,14 @@ def parse(raw: dict[str, Any]) -> DataConfig:
     panel_cache = storage.get("panel_cache", True)
     if not isinstance(panel_cache, bool):
         raise ConfigError(f"存储设置里的 panel_cache 必须是 true 或 false，当前值：{panel_cache!r}")
+    realtime = raw.get("realtime", {})
+    if not isinstance(realtime, dict) or set(realtime) - {"snapshot_interval_seconds"}:
+        raise ConfigError("实时行情设置（realtime）里只能有 snapshot_interval_seconds 一项")
+    interval = realtime.get("snapshot_interval_seconds", 60)
+    if isinstance(interval, bool) or not isinstance(interval, int | float):
+        raise ConfigError(f"实时行情的快照间隔（snapshot_interval_seconds）必须是数字，当前值：{interval!r}")
     return DataConfig(sources=sources, priority=priority, download=_parse_download(raw.get("download", {})),
-                      panel_cache=panel_cache)
+                      panel_cache=panel_cache, realtime_interval=float(interval))
 
 
 def _parse_policy(name: str, items: Any) -> SourcePolicy:
@@ -214,9 +222,17 @@ def _parse_download(raw: Any) -> DownloadOptions:
 _MIN_INTERVAL_FLOOR = 0.1  # 任何来源的请求间隔都不得小于这个值（秒）
 _TIMEOUT_CEILING = 600.0
 _OFFICIAL_COOLDOWN_FLOOR = 360  # 有官方限制的来源，被拒绝后至少暂停这么久（分钟）
+REALTIME_INTERVAL_MIN = 15.0  # 两轮全市场实时快照之间最少隔这么久（秒）
+REALTIME_INTERVAL_MAX = 3600.0
 def validate(config: DataConfig) -> list[str]:
     """校验护栏。违反时抛 ``ConfigError``（写明哪一项、当前值、允许的范围）；返回警告列表（可以保存，但要提示）。"""
     warnings: list[str] = []
+    if not math.isfinite(config.realtime_interval) or not (
+            REALTIME_INTERVAL_MIN <= config.realtime_interval <= REALTIME_INTERVAL_MAX):
+        raise ConfigError(
+            f"实时行情的快照间隔要在 {REALTIME_INTERVAL_MIN:g} 到 {REALTIME_INTERVAL_MAX:g} 秒之间，"
+            f"当前值：{config.realtime_interval:g}。取得太勤可能被来源限制访问"
+        )
     for name, p in config.sources.items():
         def label(key: str, name: str = name) -> str:
             return f"数据来源 {name} 的「{_LABELS[key]}」（{key}）"
@@ -341,6 +357,14 @@ def update_panel_cache(enabled: bool) -> DataConfig:
     with _io_lock:
         user = load_user_raw()
         user.setdefault("storage", {})["panel_cache"] = bool(enabled)
+        return _validate_and_save(load_default_raw(), user)[0]
+
+
+def update_realtime_interval(seconds: float) -> DataConfig:
+    """修改两轮全市场实时快照之间的间隔（秒），保存到用户配置。超出允许范围时抛 ``ConfigError``。"""
+    with _io_lock:
+        user = load_user_raw()
+        user.setdefault("realtime", {})["snapshot_interval_seconds"] = float(seconds)
         return _validate_and_save(load_default_raw(), user)[0]
 
 

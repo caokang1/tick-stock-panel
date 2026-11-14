@@ -1,18 +1,20 @@
 # 免费公开来源 — 新浪财经、腾讯财经、东方财富（经 AKShare）和 BaoStock。
 # 不需要任何 API Key。行情由「通达信公式」扩展按限速规则下载到本机 (data/freecn),
-# 本插件只把那份数据按 TSP 的口径读出来, 自己不联网、不发请求。
+# 日线和除权因子只把那份数据按 TSP 的口径读出来, 不联网。
+# 实时行情和五档盘口在盘中直接向腾讯的行情接口要, 经过同一套限速。
 
 name: freecn
 display_name: "免费公开来源"
 runtime: python
 entry: app.plugins.freecn.provider:FreeCnProvider
 check: app.plugins.freecn.provider:availability
-datasets: [daily, adj_factor]
-description: "新浪、腾讯、东方财富（经 AKShare）和 BaoStock 的免费日线：原始价日 K、除权因子、证券清单、6 个常用指数。不需要 Key。未接入实时、分钟和财务，自动回退 TickFlow。"
+datasets: [daily, adj_factor, realtime, depth5]
+description: "新浪、腾讯、东方财富（经 AKShare）和 BaoStock 的免费日线：原始价日 K、除权因子、证券清单、6 个常用指数。不需要 Key。另有盘中实时行情和买卖五档（腾讯行情接口，沪深股票、ETF 和指数，不含北交所）。未接入分钟和财务。"
 install_hint: "点“安装”装上取数用的库（akshare、baostock），然后在本页下方下载历史行情。"
 usage_notes:
   - "行情的下载、每天的更新和限速都在本页下方：所有请求排队一个一个发、有间隔、有每日上限，被来源拒绝后自动暂停。"
   - "TSP 同步时读的是已经下载到本机的数据，不会再向来源发请求；当天的数据要等自动更新跑完（默认 18:30）才有。"
+  - "实时行情默认每 60 秒取一轮全市场快照（约 7 次请求），间隔可以在本页下方调，最快 15 秒；免费接口比付费行情慢几秒，不适合秒级盯盘。"
   - "“通达信公式”页面的策略、回测和每日提醒直接用这份数据，不需要再点“套用”。"
 homepage: "https://github.com/akfamily/akshare"
 homepage_label: "AKShare"

@@ -4,7 +4,7 @@ import {
   DATA_SETTINGS_PATH, FREECN_SOURCE, capText, capabilityLabel, capitalError, conditionFromParsed, conditionName, configFromForm, costFromInput, costInput,
   costText, curveRange, dailyCapText, defaultTab, defaultUniverse, etaText, formFromConfig, fractionOf, frequencyText,
   initialCashError, initialTradeForm, limitsBody, limitsForm, linePath, money, needsCode, needsShares, newRankFactor,
-  paramValue, pct, pendingText, percentInput, progressPercent, rankFromForm, rankToForm, runTimeError, sourceState,
+  paramValue, pct, pendingText, percentInput, progressPercent, realtimeIntervalError, rankFromForm, rankToForm, runTimeError, sourceState,
   statusLabel, timingFromForm, timingToForm, todayText, tone, toPanelSymbol, tradeFormError, tradeFromForm, tradeInput,
   tradeToForm, withParam,
 } from './logic'
@@ -314,6 +314,15 @@ describe('「数据」页', () => {
     cooldown_minutes_on_reject: 360, count_pages_as_requests: true, official_daily_limit: 50000,
     official_max_concurrent: 1,
   }
+
+  it('实时行情的快照间隔：留空、不是数、超出范围都说明原因', () => {
+    expect(realtimeIntervalError('', 15, 3600)).toBe('请填一个秒数')
+    expect(realtimeIntervalError('abc', 15, 3600)).toBe('要填数字')
+    expect(realtimeIntervalError('10', 15, 3600)).toContain('不能小于 15 秒')
+    expect(realtimeIntervalError('4000', 15, 3600)).toContain('不能大于 3600 秒')
+    expect(realtimeIntervalError('15', 15, 3600)).toBeNull()
+    expect(realtimeIntervalError('60', 15, 3600)).toBeNull()
+  })
 
   it('行情管理的入口指向设置里的免费公开来源', () => {
     expect(DATA_SETTINGS_PATH).toBe('/settings?tab=data-sources&source=freecn')

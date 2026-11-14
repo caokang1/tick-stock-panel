@@ -79,7 +79,7 @@ def test_manifest_and_provider_declare_the_same_datasets():
     manifest = yaml.safe_load((Path(freecn.__file__).parent / "plugin.yaml").read_text(encoding="utf-8"))
     provider = freecn.FreeCnProvider()
     assert manifest["name"] == provider.name == "freecn" and "api_key_env" not in manifest
-    assert sorted(manifest["datasets"]) == sorted(provider.config.datasets) == ["adj_factor", "daily"]
+    assert sorted(manifest["datasets"]) == sorted(provider.config.datasets) == ["adj_factor", "daily", "depth5", "realtime"]
     assert manifest["entry"] == "app.plugins.freecn.provider:FreeCnProvider"
     assert freecn.availability() == (True, "ok")
 
@@ -149,7 +149,7 @@ def test_test_dataset_previews_rows_as_json(market):
     result = p.test_dataset("daily", ["600001.SH"])
     assert result["provider"] == "freecn" and result["rows"] >= 0 and "error" not in result
     json.dumps(result)  # 能转成 JSON
-    assert "只提供日线和除权因子" in p.test_dataset("realtime")["error"]
+    assert "目前只提供" in p.test_dataset("minute")["error"]
 
 
 def test_cancel_signal_from_progress_callback_is_passed_through(market):
@@ -161,3 +161,94 @@ def test_cancel_signal_from_progress_callback_is_passed_through(market):
 
     with pytest.raises(CancelledError):
         freecn.FreeCnProvider().get_daily(["600001.SH"], START, END, on_chunk_done=cancel)
+
+
+# ---------------- 实时行情和五档盘口（腾讯行情接口；这里用造出来的返回，不联网） ----------------
+def quote_line(code: str, name: str, last: float, prev: float, stamp: str = "20240314103000") -> str:
+    """造一行接口返回。位置含义见 app/plugins/freecn/quotes.py 的说明。"""
+    f = [""] * 50
+    f[0], f[1], f[2], f[3], f[4], f[5], f[6] = "1", name, code[2:], str(last), str(prev), str(prev), "12345"
+    for k in range(5):  # 买一到买五、卖一到卖五
+        f[9 + 2 * k], f[10 + 2 * k] = f"{last - 0.01 * (k + 1):.2f}", str(10 * (k + 1))
+        f[19 + 2 * k], f[20 + 2 * k] = f"{last + 0.01 * (k + 1):.2f}", str(11 * (k + 1))
+    f[30], f[31], f[32] = stamp, f"{last - prev:.2f}", f"{(last / prev - 1) * 100:.2f}"
+    f[33], f[34], f[35], f[37], f[38] = str(last + 0.5), str(prev - 0.5), f"{last}/12345/9876543", "987.65", "1.50"
+    return f'v_{code}="' + "~".join(f) + '";'
+
+
+@pytest.fixture
+def quote_api(market):
+    """假的行情接口：记下每次请求的地址，按地址里的代码造返回。限流器的等待换成不等。"""
+    from app.custom.tdx_formula.ql.data import runtime
+    from app.plugins.freecn import quotes
+
+    calls: list[str] = []
+    state = {"status": 200}
+
+    def fetch(url: str, timeout: float) -> tuple[int, str]:
+        calls.append(url)
+        codes = url.split("q=")[1].split(",")
+        return state["status"], "\n".join(quote_line(c, "名" + c, 10.5, 10.0) for c in codes)
+
+    quotes.set_fetch(fetch)
+    runtime.set_sleep(lambda seconds: None)
+    yield calls, state
+    quotes.set_fetch(None)
+    runtime.set_sleep(None)
+
+
+def test_realtime_snapshot_follows_the_tsp_contract(quote_api):
+    calls, _ = quote_api
+    rows = {r["symbol"]: r for r in freecn.FreeCnProvider().get_realtime()}
+    assert sorted(rows) == ["000002.SZ", "600001.SH"]  # 还在上市的股票；已退市的和指数不在全市场快照里
+    r = rows["600001.SH"]
+    assert r["last_price"] == 10.5 and r["prev_close"] == 10.0
+    assert r["volume"] == 12345  # 手，不再换算
+    assert r["amount"] == 9876543.0  # 元
+    assert r["change_pct"] == pytest.approx(0.05) and r["turnover_rate"] == pytest.approx(0.015)  # 小数制
+    assert r["timestamp"] == int(datetime.fromisoformat("2024-03-14T10:30:00+08:00").timestamp() * 1000)
+    assert len(calls) == 1 and "sh600001" in calls[0] and "sz000002" in calls[0]
+
+
+def test_asking_again_within_the_interval_sends_no_new_request(quote_api):
+    calls, _ = quote_api
+    p = freecn.FreeCnProvider()
+    first = p.get_realtime()
+    for _ in range(5):
+        assert p.get_realtime() == first
+    assert len(calls) == 1
+    # 五档盘口直接用同一轮快照里带的数据
+    depth = p.get_depth_batch(["600001.SH"])["600001.SH"]
+    assert depth["bid_prices"][0] == 10.49 and depth["ask_prices"][0] == 10.51
+    assert depth["bid_volumes"] == [10, 20, 30, 40, 50] and depth["ask_volumes"] == [11, 22, 33, 44, 55]
+    assert len(calls) == 1
+
+
+def test_indices_and_extra_symbols_are_fetched_only_when_missing(quote_api):
+    calls, _ = quote_api
+    p = freecn.FreeCnProvider()
+    p.get_realtime()
+    assert [r["symbol"] for r in p.get_realtime_symbols(["600001.SH"])] == ["600001.SH"] and len(calls) == 1
+    assert [r["symbol"] for r in p.get_realtime_indices(["000300.SH"])] == ["000300.SH"] and len(calls) == 2
+    assert [r["symbol"] for r in p.get_realtime_symbols(["510300.SH"], asset_type="etf")] == ["510300.SH"]
+    assert p.get_realtime_symbols([]) == [] and len(calls) == 3
+
+
+def test_a_refusal_pauses_the_source_and_nothing_more_is_sent(quote_api):
+    from app.custom.tdx_formula.ql.data.runtime import get_runtime
+
+    calls, state = quote_api
+    state["status"] = 403
+    p = freecn.FreeCnProvider()
+    assert p.get_realtime() == []  # 软失败：不抛错，不打断 TSP 的轮询线程
+    assert get_runtime().limiter.state_of("tencent_quote") == "cooling"
+    assert p.get_realtime_indices(["000300.SH"]) is None  # 失败和“成功但没有数据”要分得开
+    assert len(calls) == 1  # 被拒绝后不重试，暂停期间一个请求都不发
+
+
+def test_rows_without_a_traded_price_are_skipped():
+    from app.plugins.freecn import quotes
+
+    text = quote_line("sh600001", "停牌", 0.0, 10.0) + quote_line("sz000002", "正常", 8.0, 8.0) + 'v_pv_none_match="1";'
+    assert list(quotes.parse(text, 0)) == ["000002.SZ"]
+    assert quotes.to_query_code("600001.SH") == "sh600001" and quotes.to_query_code("AAPL.US") is None
