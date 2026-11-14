@@ -4,7 +4,8 @@
 
 - 地址 ``https://ima.qq.com/openapi/wiki/v1/<接口名>``，全部是 POST + JSON；
 - 请求头 ``ima-openapi-clientid`` 和 ``ima-openapi-apikey``（在 https://ima.qq.com/agent-interface 申请）；
-- 返回 ``{"retcode": 0, "errmsg": "...", "data": {...}}``，retcode 不是 0 时 errmsg 就是给人看的原因；
+- 文档写的返回是 ``{"retcode": 0, "errmsg": "...", "data": {...}}``，实测是 ``{"code": 0, "msg": "...", "data": {...}}``，
+  两种都认；不是 0 时那句话就是给人看的原因；
 - 这里只用到三个只读接口：``search_knowledge_base``（找知识库）、``get_addable_knowledge_base_list``
   （列出自己能写的知识库）、``search_knowledge``（在一个知识库里搜索，返回标题和命中的片段）。
 
@@ -197,9 +198,10 @@ class ImaService:
             raise ImaError("ima 返回的不是预期的格式。") from e
         if not isinstance(payload, dict):
             raise ImaError("ima 返回的不是预期的格式。")
-        code = payload.get("retcode")
+        # 官方文档写的是 retcode / errmsg，实际接口返回的是 code / msg；两种都认
+        code = payload["retcode"] if "retcode" in payload else payload.get("code")
         if code != 0:
-            message = str(payload.get("errmsg") or f"错误码 {code}")
+            message = str(payload.get("errmsg") or payload.get("msg") or f"错误码 {code}")
             if code == 110021:
                 message = "ima 提示请求太频繁，请过一会儿再试。"
             raise ImaError(f"ima：{message}", 400 if code in (110001, 110030) else 502)

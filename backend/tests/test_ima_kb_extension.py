@@ -45,6 +45,8 @@ def env(tmp_path):
             ], "is_end": True}
         else:
             return 200, json.dumps({"retcode": 110012, "errmsg": "接口无效"})
+        if state.get("real_shape"):  # 实际接口用的是 code / msg
+            return 200, json.dumps({"code": 0, "msg": "success", "data": data, "request_id": "r1"})
         return 200, json.dumps({"retcode": 0, "errmsg": "成功", "data": data})
 
     service.set_transport(post, lambda seconds: None)
@@ -176,6 +178,22 @@ def test_ai_context_only_for_prompts_about_a_single_stock(env):
     assert routes.ai_context(app, "订单号 1600519.SH9") == ""  # 不是股票代码
     client.put(f"{PREFIX}/options", json={"use_in_ai": False})
     assert routes.ai_context(app, one) == ""  # 开关关了
+
+
+def test_the_real_api_answers_with_code_and_msg(env):
+    client, _, state, _, _ = env
+    state["real_shape"] = True
+    assert client.put(f"{PREFIX}/credentials", json=GOOD).json()["configured"] is True
+    assert len(client.get(f"{PREFIX}/knowledge-bases").json()["items"]) == 2
+    from app.custom.ima_kb.service import ImaService
+
+    # 失败时的说明也从 msg 里取
+    def post(url, headers, body, timeout):
+        return 200, json.dumps({"code": 110030, "msg": "没有权限访问该知识库"})
+
+    service.set_transport(post, lambda seconds: None)
+    with pytest.raises(service.ImaError, match="没有权限访问该知识库"):
+        ImaService(client.app.state.repo.store.data_dir / "x")._call("search_knowledge", {}, "a", "b")
 
 
 def test_helpers():
