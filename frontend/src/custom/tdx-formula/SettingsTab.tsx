@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw, Save } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { toast } from '@/components/Toast'
 import { tdxApi, tdxKeys, type CostKey, type Settings } from './client'
-import { COST_UNITS, costFromInput, costInput, costText, initialCashError, money } from './logic'
+import { COST_UNITS, DATA_SETTINGS_PATH, costFromInput, costInput, costText, initialCashError, money } from './logic'
 import { BUTTON, CARD, ErrorNote, INPUT, LINK, PRIMARY, Tag, errorText } from './ui'
 
 const COST_KEYS: CostKey[] = ['commission', 'min_commission', 'stamp_tax', 'slippage']
@@ -19,8 +20,8 @@ type CostForm = Record<CostKey, string>
 const costForm = (costs: Record<CostKey, number>): CostForm =>
   Object.fromEntries(COST_KEYS.map(k => [k, costInput(k, costs[k])])) as CostForm
 
-/** 「设置」页：交易成本、模拟账户初始资金、推送用哪里的机器人；行情数据的下载和更新在「数据」页。 */
-export function SettingsTab({ onGoData }: { onGoData: () => void }) {
+/** 「设置」页：交易成本、模拟账户初始资金、推送用哪里的机器人；行情数据的下载和更新在「设置 → 数据源 → 免费公开来源」。 */
+export function SettingsTab() {
   const qc = useQueryClient()
   const status = useQuery({ queryKey: tdxKeys.status, queryFn: tdxApi.status, staleTime: 30_000 })
   const settings = useQuery({ queryKey: tdxKeys.settings, queryFn: tdxApi.settings, staleTime: 30_000 })
@@ -70,7 +71,7 @@ export function SettingsTab({ onGoData }: { onGoData: () => void }) {
               ? `行情：${status.data.first_date ?? '—'} 到 ${status.data.latest_date ?? '—'}，共 ${status.data.stock_count.toLocaleString('en-US')} 只股票（含已退市的），后复权。`
               : '还没有行情数据。'}
         </span>
-        <button className={LINK} onClick={onGoData}>下载、更新和限速在「数据」页</button>
+        <Link className={LINK} to={DATA_SETTINGS_PATH}>下载、更新和限速在「设置 → 数据源 → 免费公开来源」</Link>
       </section>
 
       <section className={`${CARD} space-y-3`}>

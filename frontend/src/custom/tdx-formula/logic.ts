@@ -92,9 +92,12 @@ export function statusLabel(status: string): string {
   return STATUS_LABEL[status as StrategyStatus] ?? status
 }
 
-/** 打开页面时先看哪一页：还没有行情先去下载数据；有运行中的策略先看今日提醒，否则先去建策略 */
-export function defaultTab(runningCount: number, hasData = true): 'today' | 'strategy' | 'data' {
-  if (!hasData) return 'data'
+/** 行情的下载、更新、限速都在这里：设置 → 数据源 → 免费公开来源 */
+export const FREECN_SOURCE = 'freecn'
+export const DATA_SETTINGS_PATH = `/settings?tab=data-sources&source=${FREECN_SOURCE}`
+
+/** 打开页面时先看哪一页：有运行中的策略先看今日提醒，否则先去建策略 */
+export function defaultTab(runningCount: number): 'today' | 'strategy' {
   return runningCount > 0 ? 'today' : 'strategy'
 }
 

@@ -63,7 +63,7 @@ class FormulaService:
 
     def panel(self, start: str | None = None, end: str | None = None) -> Panel:
         if not self.has_data():
-            raise DataError("还没有行情数据。请先到“数据”页下载历史行情。")
+            raise DataError("还没有行情数据。请先到“设置 → 数据源 → 免费公开来源”下载历史行情。")
         panel = ql_store.build_panel()
         lo, hi = _day(start, "开始"), _day(end, "结束")
         if lo or hi:

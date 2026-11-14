@@ -33,7 +33,7 @@ _CHUNK = 200  # 每读这么多只股票交一批、报一次进度
 _DAILY_SCHEMA = {"symbol": pl.String, "date": pl.Date, "open": pl.Float64, "high": pl.Float64,
                  "low": pl.Float64, "close": pl.Float64, "volume": pl.Int64, "amount": pl.Float64}
 _ADJ_SCHEMA = {"symbol": pl.String, "trade_date": pl.Date, "ex_factor": pl.Float64}
-_NO_DATA = "本机还没有免费来源的行情。请先到“通达信公式 → 数据”页下载历史行情。"
+_NO_DATA = "本机还没有免费来源的行情。请先到“设置 → 数据源 → 免费公开来源”下载历史行情。"
 Progress = Callable[[int, int], Any]
 
 

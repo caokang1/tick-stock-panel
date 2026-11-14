@@ -39,7 +39,7 @@ export function useRefreshAfterDataTask(): DataProgress | undefined {
   return progress.data
 }
 
-/** 「数据」页：行情下到哪了、下载和更新、每天几点自动更新、从别处导入、各个来源的限速。 */
+/** 行情管理（显示在 设置 → 数据源 → 免费公开来源 里）：行情下到哪了、下载和更新、每天几点自动更新、从别处导入、各个来源的限速。 */
 export function DataTab() {
   const qc = useQueryClient()
   const progress = useDataProgress()
@@ -88,7 +88,7 @@ export function DataTab() {
       <section className={`${CARD} space-y-3`}>
         <h2 className={H2}>行情数据</h2>
         <p className={NOTE}>
-          这一页用的是全市场 A 股的日线行情，来自免费的公开来源（新浪财经、腾讯财经、东方财富和 BaoStock），由本页自己下载、保存在这台电脑上，不需要账号，也不花钱。
+          “通达信公式”页面用的是全市场 A 股的日线行情，来自免费的公开来源（新浪财经、腾讯财经、东方财富和 BaoStock），由这里下载、保存在这台电脑上，不需要账号，也不花钱。
         </p>
         <StatusBox status={data} loading={status.isLoading} error={status.error ? errorText(status.error) : null} />
 
@@ -154,7 +154,7 @@ function StatusBox({ status, loading, error }: { status: Status | undefined; loa
   if (!status.has_data) {
     return (
       <div className="space-y-2">
-        <WarnNote>还没有行情数据。点下面的“开始下载历史数据”，或者在本页下方从已有的目录导入一份；有了行情才能回测和生成提醒。</WarnNote>
+        <WarnNote>还没有行情数据。点下面的“开始下载历史数据”，或者在下方从已有的目录导入一份；有了行情才能回测和生成提醒。</WarnNote>
         <p className="break-all text-[11px] text-muted">下载的行情会保存在：{status.data_dir}</p>
       </div>
     )

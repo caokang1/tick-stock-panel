@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Block, Options, RealPosition, RealTodo, SourcePolicy } from './client'
 import {
-  capText, capabilityLabel, capitalError, conditionFromParsed, conditionName, configFromForm, costFromInput, costInput,
+  DATA_SETTINGS_PATH, FREECN_SOURCE, capText, capabilityLabel, capitalError, conditionFromParsed, conditionName, configFromForm, costFromInput, costInput,
   costText, curveRange, dailyCapText, defaultTab, defaultUniverse, etaText, formFromConfig, fractionOf, frequencyText,
   initialCashError, initialTradeForm, limitsBody, limitsForm, linePath, money, needsCode, needsShares, newRankFactor,
   paramValue, pct, pendingText, percentInput, progressPercent, rankFromForm, rankToForm, runTimeError, sourceState,
@@ -315,11 +315,9 @@ describe('「数据」页', () => {
     official_max_concurrent: 1,
   }
 
-  it('还没有行情时先去「数据」页', () => {
-    expect(defaultTab(0, false)).toBe('data')
-    expect(defaultTab(3, false)).toBe('data')
-    expect(defaultTab(3, true)).toBe('today')
-    expect(defaultTab(0, true)).toBe('strategy')
+  it('行情管理的入口指向设置里的免费公开来源', () => {
+    expect(DATA_SETTINGS_PATH).toBe('/settings?tab=data-sources&source=freecn')
+    expect(FREECN_SOURCE).toBe('freecn')
   })
 
   it('还要多久：按小时、分钟说，不知道时不说', () => {

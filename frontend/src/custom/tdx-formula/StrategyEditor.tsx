@@ -274,7 +274,7 @@ export function StrategyEditor({ initial, running, options, status, dirty, onSav
           {(universe.min_float_cap != null || universe.max_float_cap != null) && status?.has_data
             && !status.float_shares_ready && (
             <p className="text-xs text-warning">
-              历史流通股本还没有补齐。没有这项数据的股票不会被选中，统计结果会偏少；到「数据」页点“继续下载历史数据”可以补齐。
+              历史流通股本还没有补齐。没有这项数据的股票不会被选中，统计结果会偏少；到「设置 → 数据源 → 免费公开来源」点“继续下载历史数据”可以补齐。
             </p>
           )}
 
@@ -326,7 +326,7 @@ export function StrategyEditor({ initial, running, options, status, dirty, onSav
             {computing && <span className="text-[11px] text-muted">计算中…全市场第一次读取要十几秒</span>}
           </div>
           {!status?.has_data ? (
-            <Hint>还没有行情数据，先到「数据」页下载历史行情。</Hint>
+            <Hint>还没有行情数据，先到「设置 → 数据源 → 免费公开来源」下载历史行情。</Hint>
           ) : enabledCount === 0 ? (
             <Hint>解析公式并至少勾选一个条件，这里会自动算出历史上的信号统计。</Hint>
           ) : statsError ? (
