@@ -1,0 +1,16 @@
+# 免费公开来源 — 新浪财经、腾讯财经、东方财富（经 AKShare）和 BaoStock。
+# 不需要任何 API Key。行情由「通达信公式」扩展按限速规则下载到本机 (data/freecn),
+# 本插件只把那份数据按 TSP 的口径读出来, 自己不联网、不发请求。
+
+name: freecn
+display_name: "免费公开来源"
+runtime: python
+entry: app.plugins.freecn.provider:FreeCnProvider
+check: app.plugins.freecn.provider:availability
+datasets: [daily, adj_factor]
+description: "新浪、腾讯、东方财富（经 AKShare）和 BaoStock 的免费日线：原始价日 K、除权因子、证券清单、6 个常用指数。不需要 Key。未接入实时、分钟和财务，自动回退 TickFlow。"
+install_hint: "点“安装”装上取数用的库（akshare、baostock），然后到左侧“通达信公式 → 数据”页下载历史行情。"
+usage_notes: "行情的下载和每天的更新在“通达信公式 → 数据”页进行：所有请求排队一个一个发、有间隔、有每日上限，被来源拒绝后自动暂停，限速可以在那里调整。这里读的是已经下载到本机的数据，TSP 同步时不会再向来源发请求；所以当天的数据要等那边更新完（默认 18:30）才有。"
+homepage: "https://github.com/akfamily/akshare"
+homepage_label: "AKShare"
+billing: "免费"

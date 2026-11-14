@@ -3,9 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw, Save } from 'lucide-react'
 import { toast } from '@/components/Toast'
 import { tdxApi, tdxKeys, type CostKey, type Settings } from './client'
-import { DataSource } from './DataSource'
 import { COST_UNITS, costFromInput, costInput, costText, initialCashError, money } from './logic'
-import { BUTTON, CARD, ErrorNote, INPUT, PRIMARY, Tag, errorText } from './ui'
+import { BUTTON, CARD, ErrorNote, INPUT, LINK, PRIMARY, Tag, errorText } from './ui'
 
 const COST_KEYS: CostKey[] = ['commission', 'min_commission', 'stamp_tax', 'slippage']
 const COST_HELP: Record<CostKey, string> = {
@@ -20,8 +19,8 @@ type CostForm = Record<CostKey, string>
 const costForm = (costs: Record<CostKey, number>): CostForm =>
   Object.fromEntries(COST_KEYS.map(k => [k, costInput(k, costs[k])])) as CostForm
 
-/** 「设置」页：交易成本、模拟账户初始资金、行情数据从哪里来、推送用哪里的机器人。 */
-export function SettingsTab() {
+/** 「设置」页：交易成本、模拟账户初始资金、推送用哪里的机器人；行情数据的下载和更新在「数据」页。 */
+export function SettingsTab({ onGoData }: { onGoData: () => void }) {
   const qc = useQueryClient()
   const status = useQuery({ queryKey: tdxKeys.status, queryFn: tdxApi.status, staleTime: 30_000 })
   const settings = useQuery({ queryKey: tdxKeys.settings, queryFn: tdxApi.settings, staleTime: 30_000 })
@@ -63,7 +62,16 @@ export function SettingsTab() {
 
   return (
     <div className="space-y-4">
-      <DataSource status={status.data} loading={status.isLoading} error={status.error ? errorText(status.error) : null} />
+      <section className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-border bg-surface px-4 py-3 text-xs text-secondary">
+        <span>
+          {status.isLoading ? '正在检查行情数据…'
+            : status.error || !status.data ? `行情数据的状态没有取到：${errorText(status.error)}`
+            : status.data.has_data
+              ? `行情：${status.data.first_date ?? '—'} 到 ${status.data.latest_date ?? '—'}，共 ${status.data.stock_count.toLocaleString('en-US')} 只股票（含已退市的），后复权。`
+              : '还没有行情数据。'}
+        </span>
+        <button className={LINK} onClick={onGoData}>下载、更新和限速在「数据」页</button>
+      </section>
 
       <section className={`${CARD} space-y-3`}>
         <h2 className="text-sm font-medium text-foreground">交易成本和模拟账户</h2>

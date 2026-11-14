@@ -10,44 +10,71 @@
 4. **实际持仓**：模拟账户假设每条提醒都照做。打开“记录实际持仓”后，你答复“已买入 / 没买 / 已卖出 / 没卖”并填上实际成交价，
    之后的卖出提醒和“还能买几只、买多少股”就按你真实的持仓和资金来算；没有答复的一律当作没有成交。
 
-这是一个独立的扩展：不修改 TSP 的核心代码，不使用也不影响 TSP 自己的数据源、指标流水线、策略引擎和回测。
-页面入口是侧栏的“通达信公式”（`/tdx-formula`）。
+这是一个独立的扩展：不修改 TSP 的核心代码。行情由扩展自己从免费的公开来源下载，不需要任何 API Key，
+也不依赖别的项目。页面入口是侧栏的“通达信公式”（`/tdx-formula`）。
 
 ## 它和 TSP 自带功能的关系
 
 | | 这个扩展 | TSP 自带 |
 | :-- | :-- | :-- |
 | 策略怎么写 | 通达信公式（`MA`、`REF`、`CROSS`、`EXIST`、`:=` 赋值……） | 条件信号、因子 DSL、Python 策略 |
-| 数据 | quant-lab 下载到本机的全市场日线 | TSP 的数据源和 enriched 表 |
+| 数据 | 扩展自己下载的全市场日线（`data/freecn`） | TSP 的数据源和 enriched 表 |
 | 输出 | 信号统计、组合回测、每日买卖提醒、实际持仓 | 策略扫描、回测、监控、模拟盘 |
 | 推送 | 用 TSP 设置里配置的飞书、企业微信机器人 | 同左 |
 
 两边的数据和计算互不相通：这里的策略不进 TSP 的策略库，回测和模拟账户也是扩展自己的一套
-（规则与 quant-lab 相同：次日开盘成交、T+1、开盘涨停买不进、开盘跌停或停牌卖不出顺延、退市按最后收盘价了结、
+（规则是：次日开盘成交、T+1、开盘涨停买不进、开盘跌停或停牌卖不出顺延、退市按最后收盘价了结、
 最低佣金、一手 100 股）。
 
-## 行情数据：来自 quant-lab
+## 行情数据：免费公开来源，带限速
 
-扩展只读 quant-lab（本扩展作者的另一个项目，目前还没有公开）下载到本机的行情目录（`data/market`），不联网、不往那个目录里写任何东西。
-在 quant-lab 公开、或者改成 TSP 的数据源插件之前，没有那份数据的人只能用“解析公式”，统计不可用。
-那份数据全部来自免费的公开来源，带复权因子、历史上每天的 ST 状态、已退市的股票、流通股本和行业。
+全部来自免费的公开来源：新浪财经、腾讯财经、东方财富（经 [AKShare](https://github.com/akfamily/akshare)）和
+[BaoStock](https://www.baostock.com/)。每类数据按顺序使用，前一个不可用时自动换下一个。下载下来的有：
+不复权日线、复权因子、历史上每天的 ST 状态、已退市的股票、每天的流通股本、行业、6 个常用指数、交易日历。
+数据放在 TSP 数据目录下的 `freecn/market/`，每只股票一个文件，全市场 2015 年至今约 360 MB。
 
-按下面的顺序找行情目录，找到第一个有数据的就用它：
+**限速**是为了遵守这些来源的使用规则、避免被限制访问（BaoStock 会把访问太频繁的地址列入黑名单）：
 
-1. 页面上“换目录”里设置的目录（保存在 `data/user_data/extensions/tdx_formula/config.json`）；
-2. 环境变量 `TDX_FORMULA_DATA_DIR`；
-3. 和本项目并排放着的 `../quant-lab/data`。
+- 所有请求排队，一个一个发，不同时发多个；
+- 请求之间留有间隔；BaoStock 每天最多 20000 次请求（它的官方上限是 50000 次）；
+- 被某个来源拒绝后自动暂停，到时间再恢复，不重试、不换账号、不换地址；
+- 这些数值可以在“数据”页里调整，但不能超过来源官方公布的上限，BaoStock 不能改成同时发多个请求。
 
-给的可以是 quant-lab 的 `data` 目录，也可以直接是其中的 `market` 目录。没有找到时页面会说明，解析公式仍然可用，统计不可用。
+默认值在 `ql/data/data_sources.default.toml`，用户的修改保存在 `data/freecn/config/data_sources.toml`。
+免费来源不保证长期可用；它们改了接口或规则时取数会失败，需要更新程序。
 
-全市场十二年的数据读进内存后约占 2 到 3 GB，第一次读取要十几秒；之后留在内存里，quant-lab 更新了数据会自动重读。
+**第一次使用**：到“数据”页下载历史行情，全市场从 2015 年至今大约 3 小时，可以中途停止，下次接着下。
+已经用 quant-lab 下载过的，可以在同一页把它的 data 目录“导入”过来（拷一份，原目录不改动），不用重新下载。
+
+**取数用的库**：下载和更新需要 `akshare`、`baostock` 两个库。它们不在 TSP 的默认依赖里：到 TSP 的
+“设置 → 数据源”里给“免费公开来源”点“安装”，或者手动 `uv pip install -r backend/app/plugins/freecn/requirements.txt`。
+没有装时，解析公式、查看已有数据、回测和提醒都照常可用，只是不能下载和更新。
+
+**内存**：全市场十二年的数据读进内存后约占 2 到 3 GB，第一次读取要十几秒；之后有硬盘缓存（约 1.3 GB），再次启动约 1 秒。
+
+## 给 TSP 的其他功能用：「免费公开来源」数据源插件
+
+`backend/app/plugins/freecn/` 是一个 TSP 数据源插件，提供 `daily`（原始价日 K）和 `adj_factor`（除权因子）两类数据，
+外加证券清单和 6 个常用指数的日线。它自己不联网，只把上面下载到本机的那份数据按 TSP 的口径读出来
+（代码写法、成交量换算成手、累计复权因子换算成每次除权的单次比例）。
+
+在 TSP 的“设置 → 数据源”里把日 K 和除权因子切到“免费公开来源”之后，TSP 自带的策略、回测、监控用的就是带复权的免费数据。
+注意三点：
+
+- TSP 自己的存储没有地方放历史 ST、退市日期、每天的流通股本和行业，这几项只有本扩展的页面用得上；
+- 已退市的股票不会出现在给 TSP 的证券清单里；
+- TSP 同步时读到的是本机已有的数据，当天的行情要等“数据”页的自动更新跑完（默认 18:30）才有。
 
 ## 每天的提醒是怎么产生的
 
-这个扩展自己不下载行情。quant-lab 在收盘后更新它的行情目录；扩展每分钟看一眼那里的概况文件（`meta.json`），
-发现行情到了新的一天、又有运行中的策略，就：先给自己的数据库留一份备份，再把每个运行中的策略推进到这一天、
-生成提醒（打开了实际持仓的策略再按真实持仓生成一份），最后推送一次。同一个行情日期只推送一次。
-也可以在页面上点“现在生成提醒”手动跑。所以要收到每日提醒，quant-lab 和 TSP 都得在运行。
+扩展里有一个后台线程每分钟看一眼：
+
+1. 到了“数据”页设定的时间（默认 18:30，可以设在 18:00 到 23:30 之间）、当天的行情还没有，就更新一次行情；
+   没成功的话每半小时再试一次。
+2. 行情到了新的一天、又有运行中的策略，就：先给自己的数据库留一份备份，再把每个运行中的策略推进到这一天、
+   生成提醒（打开了实际持仓的策略再按真实持仓生成一份），最后推送一次。同一个行情日期只推送一次。
+
+也可以在页面上点“更新到最新”“现在生成提醒”手动跑。这些都只在 TSP 运行时执行。
 
 ## 数据放在哪里
 
@@ -56,7 +83,9 @@
 - `tdx.db`：策略、最近一次回测结果、模拟账户、提醒记录、实际持仓和成交、设置（SQLite）。
   其中模拟账户、提醒记录和实际持仓删了无法重建。
 - `backups/tdx-日期.db`：每日任务开始之前自动备份，一天一份，保留最近 14 天。
-- `config.json`：页面上设置的行情目录。
+
+行情在 `data/freecn/`：`market/`（日线、指数、日历、证券清单、行业、下载进度）、`config/`（限速的修改）、
+`state.db`（各来源今天发了多少请求、冷却到什么时候）。行情可以随时重新下载，`tdx.db` 不行。
 
 ## 口径
 
@@ -71,7 +100,9 @@
 
 都在 `/api/custom/tdx-formula/` 下面：
 
-- 行情与公式：`GET status`、`PUT config`、`GET blocks`、`GET options`、`POST parse`、`POST stats`、`POST signals`、`POST picks`
+- 行情：`GET status`、`GET data/sources`、`PUT data/sources/{name}`、`GET data/progress`、`POST data/download`、
+  `POST data/stop`、`POST data/update`、`POST data/import`、`GET/PUT data/schedule`
+- 公式与统计：`GET blocks`、`GET options`、`POST parse`、`POST stats`、`POST signals`、`POST picks`
 - 策略：`GET/POST strategies`、`GET/PUT/DELETE strategies/{id}`、`POST strategies/{id}/start`、`POST strategies/{id}/stop`
 - 回测：`POST backtest`、`GET strategies/{id}/backtest`
 - 提醒与账户：`GET today`、`GET strategies/{id}/account`、`POST daily/run`
@@ -82,12 +113,16 @@
 ## 目录
 
 - `routes.py`：接口，以及每分钟检查一次的后台线程。
-- `service.py`：找行情目录、读全市场数据、解析公式、信号统计。
+- `service.py`：读全市场数据、解析公式、信号统计、从别处导入行情。
+- `data_service.py`：行情的下载、更新、限速设置、每天自动更新的时间。
 - `live_service.py`：策略、组合回测、每日任务、推送、实际持仓。
-- `ql/`：从 quant-lab 带过来的计算内核（全市场日线的矩阵表示、通达信公式的解析与求值、条件拆分、信号统计、
-  组合回测、模拟账户逐日推进、实际持仓），读 quant-lab 行情目录的 `loader.py`，以及扩展自己的数据库 `core/db.py`。
+- `ql/`：计算和取数的内核，从作者的另一个项目 quant-lab 带过来：全市场日线的矩阵表示、通达信公式的解析与求值、
+  条件拆分、信号统计、组合回测、模拟账户逐日推进、实际持仓（`core/`、`tdx/`、`blocks/`、`backtest/`、`live/`），
+  以及数据层 `data/`（各来源的适配器、限流器、按优先级换来源、下载与续传、本机存储）。
+- `backend/app/plugins/freecn/`：给 TSP 用的数据源插件。
 - 前端：`frontend/src/custom/tdx-formula/`。
-- 测试：`backend/tests/test_tdx_formula_extension.py`、`frontend/src/custom/tdx-formula/logic.test.ts`。
+- 测试：`backend/tests/test_tdx_formula_extension.py`、`backend/tests/test_freecn_provider.py`、
+  `frontend/src/custom/tdx-formula/logic.test.ts`。
 
 ## 只用到的核心能力
 

@@ -1,7 +1,7 @@
 /** 页面用到的纯函数：解析结果转成条件、数字的显示。没有界面依赖，方便单独测试。 */
 import type {
   Block, Condition, CostKey, Direction, OnFail, Options, ParamSpec, ParsedCondition, RankConfig, RealPosition, RealTodo,
-  StrategyConfig, StrategyStatus, TimingConfig, TradeInput, TradeRules, Universe,
+  SourcePolicy, SourcePolicyUpdate, StrategyConfig, StrategyStatus, TimingConfig, TradeInput, TradeRules, Universe,
 } from './client'
 
 export function defaultUniverse(): Universe {
@@ -64,7 +64,7 @@ export function capText(yuan: number | null | undefined): string {
   return `${yi < 1 ? yi.toFixed(2) : yi < 1000 ? yi.toFixed(1) : Math.round(yi).toLocaleString('en-US')} 亿`
 }
 
-/** quant-lab 的代码写法 sh.600000 → 本面板的写法 600000.SH；认不出来的原样返回 */
+/** 行情数据里的代码写法 sh.600000 → 本面板的写法 600000.SH；认不出来的原样返回 */
 export function toPanelSymbol(code: string): string {
   const m = /^(sh|sz|bj)\.(\d{6})$/i.exec(code)
   return m ? `${m[2]}.${m[1].toUpperCase()}` : code
@@ -92,8 +92,9 @@ export function statusLabel(status: string): string {
   return STATUS_LABEL[status as StrategyStatus] ?? status
 }
 
-/** 打开页面时先看哪一页：有运行中的策略先看今日提醒，否则先去建策略 */
-export function defaultTab(runningCount: number): 'today' | 'strategy' {
+/** 打开页面时先看哪一页：还没有行情先去下载数据；有运行中的策略先看今日提醒，否则先去建策略 */
+export function defaultTab(runningCount: number, hasData = true): 'today' | 'strategy' | 'data' {
+  if (!hasData) return 'data'
   return runningCount > 0 ? 'today' : 'strategy'
 }
 
@@ -436,4 +437,136 @@ export function linePath(values: (number | null)[], lo: number, hi: number, widt
     pen = true
   })
   return parts.join('')
+}
+
+// ---------------- 「数据」页：下载进度、数据来源和限速 ----------------
+
+/** 还要多久：秒 → “约 2 小时 5 分钟”；不知道时返回空字符串 */
+export function etaText(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return ''
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 1) return '不到 1 分钟'
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (hours === 0) return `约 ${rest} 分钟`
+  return rest === 0 ? `约 ${hours} 小时` : `约 ${hours} 小时 ${rest} 分钟`
+}
+
+/** 进度条走到百分之几（0–100 的整数）；总数还不知道时是 0 */
+export function progressPercent(done: number, total: number): number {
+  if (!(total > 0) || !(done > 0)) return 0
+  return Math.min(100, Math.floor((done / total) * 100))
+}
+
+type StateTone = 'muted' | 'accent' | 'warning' | 'danger'
+const SOURCE_STATES: Record<string, { label: string; tone: StateTone }> = {
+  ok: { label: '正常', tone: 'accent' },
+  cooldown: { label: '暂停中', tone: 'warning' },
+  cap_reached: { label: '已达今日上限', tone: 'danger' },
+  disabled: { label: '已停用', tone: 'muted' },
+}
+
+/** 数据来源的状态 → 标签上的字和颜色；不认识的状态原样显示 */
+export function sourceState(state: string): { label: string; tone: StateTone } {
+  return SOURCE_STATES[state] ?? { label: state, tone: 'muted' }
+}
+
+const CAPABILITY_LABELS: Record<string, string> = {
+  trade_calendar: '交易日历',
+  securities: '证券清单',
+  stock_daily: '个股日线',
+  adjust_factor: '复权因子',
+  market_snapshot: '当日全市场行情',
+  st_history: '历史 ST 状态',
+  index_daily: '指数日线',
+  industry: '行业分类',
+  float_shares: '流通股本',
+}
+/** 「来源顺序」里各类数据按这个顺序排 */
+export const CAPABILITY_ORDER = Object.keys(CAPABILITY_LABELS)
+
+export function capabilityLabel(key: string): string {
+  return CAPABILITY_LABELS[key] ?? key
+}
+
+/** 每日上限的显示：0 表示不限 */
+export function dailyCapText(cap: number): string {
+  return cap > 0 ? cap.toLocaleString('en-US') : '不限'
+}
+
+export type LimitKey = Exclude<keyof SourcePolicyUpdate, 'enabled'>
+
+/** 「调整限速」里的数值项；label 和后端报错时用的名称一致 */
+export const LIMIT_FIELDS: { key: LimitKey; label: string; integer: boolean; step: number; help: string }[] = [
+  { key: 'daily_request_cap', label: '每日请求上限', integer: true, step: 1000, help: '一天最多发多少次请求，0 表示不限' },
+  { key: 'min_interval_seconds', label: '两次请求的最小间隔（秒）', integer: false, step: 0.1, help: '越大越慢、越安全，不能小于 0.1' },
+  { key: 'jitter_seconds', label: '随机抖动上限（秒）', integer: false, step: 0.1, help: '每次在间隔上再随机多等一会儿，最多等这么久' },
+  { key: 'timeout_seconds', label: '单次请求超时（秒）', integer: false, step: 5, help: '一次请求等多久没有结果就算失败，最多 600' },
+  { key: 'max_retries', label: '失败后的重试次数', integer: true, step: 1, help: '一次请求失败后再试几次' },
+  { key: 'stop_after_consecutive_failures', label: '连续失败多少次后停止', integer: true, step: 1, help: '连着失败这么多次，这次任务里就不再用这个来源' },
+  { key: 'cooldown_minutes_on_reject', label: '被限制后暂停多久（分钟）', integer: true, step: 10, help: '被来源拒绝后，停这么久再用它' },
+]
+
+/** 「调整限速」对话框里填的内容：数值都是输入框里的字 */
+export type LimitsForm = { enabled: boolean } & Record<LimitKey, string>
+
+export function limitsForm(policy: SourcePolicy): LimitsForm {
+  const form = { enabled: policy.enabled } as LimitsForm
+  for (const f of LIMIT_FIELDS) form[f.key] = String(policy[f.key])
+  return form
+}
+
+const MIN_INTERVAL_FLOOR = 0.1
+const TIMEOUT_CEILING = 600
+const OFFICIAL_COOLDOWN_FLOOR = 360
+
+/** 这一项按规则不能填这个数时，返回原因；规则和后端的校验一致（后端还会再查一遍） */
+function limitProblem(key: LimitKey, value: number, policy: SourcePolicy): string | null {
+  const official = policy.official_daily_limit
+  switch (key) {
+    case 'daily_request_cap':
+      if (value < 0) return '不能是负数（0 表示不限）'
+      if (official != null && value === 0) return `不能设为 0（不限）：这个来源官方规定每日最多 ${official} 次，请填 1 到 ${official} 之间的数`
+      if (official != null && value > official) return `不能超过官方每日上限 ${official}，超过会被对方限制访问`
+      return null
+    case 'min_interval_seconds':
+      return value < MIN_INTERVAL_FLOOR ? `不能小于 ${MIN_INTERVAL_FLOOR} 秒，请求之间必须留出间隔` : null
+    case 'jitter_seconds':
+      return value < 0 ? '不能是负数' : null
+    case 'timeout_seconds':
+      return value <= 0 ? '必须大于 0' : value > TIMEOUT_CEILING ? `不能超过 ${TIMEOUT_CEILING} 秒` : null
+    case 'max_retries':
+      return value < 0 ? '不能是负数' : null
+    case 'stop_after_consecutive_failures':
+      return value < 1 ? '至少为 1' : null
+    case 'cooldown_minutes_on_reject':
+      if (value < 1) return '至少为 1，被来源限制后必须暂停'
+      if (official != null && value < OFFICIAL_COOLDOWN_FLOOR) {
+        return `不能小于 ${OFFICIAL_COOLDOWN_FLOOR} 分钟：这个来源被限制后官方至少冻结 6 小时，提前重试只会让限制时间变得更长`
+      }
+      return null
+  }
+}
+
+/** 对话框里填的内容 → 发给后端的修改；有没填的、填错的，返回第一处问题 */
+export function limitsBody(form: LimitsForm, policy: SourcePolicy): Parsed<SourcePolicyUpdate> {
+  const body = { enabled: form.enabled } as SourcePolicyUpdate
+  for (const f of LIMIT_FIELDS) {
+    const value = numberOrNull(form[f.key])
+    if (value == null) return fail(`「${f.label}」还没有填`)
+    if (!Number.isFinite(value)) return fail(`「${f.label}」要填数字`)
+    if (f.integer && !Number.isInteger(value)) return fail(`「${f.label}」要填整数`)
+    const problem = limitProblem(f.key, value, policy)
+    if (problem) return fail(`「${f.label}」${problem}`)
+    body[f.key] = value
+  }
+  return { ok: true, value: body }
+}
+
+/** 每天自动更新的时间填得对不对；对返回 null */
+export function runTimeError(value: string, min: string, max: string): string | null {
+  if (!/^\d{2}:\d{2}$/.test(value)) return '请填一个时间，例如 18:30'
+  // 都是 时:分 两位数的写法，直接按字比较就是按时间比较
+  if (value < min || value > max) return `每天自动更新的时间要在 ${min} 到 ${max} 之间`
+  return null
 }

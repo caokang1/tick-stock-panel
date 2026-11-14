@@ -1,0 +1,83 @@
+# 数据来源的默认配置（随项目提供，升级时会被覆盖，请不要直接改这个文件）。
+# 用户的修改保存在 data/config/data_sources.toml，读取时覆盖这里的同名项。
+# 各项含义见下面每一项的注释；护栏的规则见 backend/src/quantlab/data/config.py。
+
+[sources.baostock]
+enabled = true
+max_concurrent = 1                    # 官方规则：不能并发连接
+daily_request_cap = 20000             # 官方上限的 40%；登录、查询、每一页翻页都各算一次
+min_interval_seconds = 0.3
+jitter_seconds = 0.2
+timeout_seconds = 60
+max_retries = 2
+stop_after_consecutive_failures = 5
+cooldown_minutes_on_reject = 360      # 官方规则：被限制后冻结 6 小时
+count_pages_as_requests = true
+official_daily_limit = 50000
+official_max_concurrent = 1
+
+[sources.akshare_em]
+enabled = true
+max_concurrent = 1
+daily_request_cap = 0                 # 0 表示不限
+min_interval_seconds = 0.5
+jitter_seconds = 0.3
+timeout_seconds = 30
+max_retries = 2
+stop_after_consecutive_failures = 5
+cooldown_minutes_on_reject = 10
+count_pages_as_requests = false
+
+[sources.akshare_sina]
+enabled = true
+max_concurrent = 1
+daily_request_cap = 0
+min_interval_seconds = 0.5
+jitter_seconds = 0.3
+timeout_seconds = 30
+max_retries = 2
+stop_after_consecutive_failures = 5
+cooldown_minutes_on_reject = 10
+count_pages_as_requests = false
+
+[sources.akshare_tx]
+enabled = true
+max_concurrent = 1
+daily_request_cap = 0
+min_interval_seconds = 0.5
+jitter_seconds = 0.3
+timeout_seconds = 30
+max_retries = 2
+stop_after_consecutive_failures = 5
+cooldown_minutes_on_reject = 10
+count_pages_as_requests = false
+
+# 每种能力的来源优先级：排在前面的失败、被限制或正在冷却时，自动换下一个。
+[priority]
+stock_daily = ["akshare_sina", "akshare_tx", "akshare_em"]
+# 复权因子必须是"乘法"口径。实测东方财富和腾讯的后复权价不是简单乘一个因子得到的，
+# 用它们算出的涨跌幅会失真，所以这两个来源不提供复权因子；新浪和 BaoStock 提供的是真正的因子。
+adjust_factor = ["akshare_sina", "baostock"]
+index_daily = ["akshare_sina", "akshare_em"]
+st_history = ["baostock"]
+securities = ["baostock"]
+trade_calendar = ["baostock", "akshare_sina"]
+market_snapshot = ["baostock", "akshare_em"]
+industry = ["baostock"]
+# 给已有的日线补流通股本：新浪直接给出；已退市的股票新浪没有，换 BaoStock（用换手率反推）
+float_shares = ["akshare_sina", "baostock"]
+
+# 启动加速：把拼好的全市场行情在硬盘上另存一份（约 1.3 GB），下次启动直接读，不用从各只股票的文件重新拼。
+# 关掉可以省下这部分空间，代价是每次启动后第一次读行情要多等几秒到十几秒。
+[storage]
+panel_cache = true
+
+[download]
+default_start = "2015-01-01"
+# 基准和择时用的指数
+indices = ["sh.000001", "sh.000300", "sh.000905", "sh.000852", "sz.399001", "sz.399006"]
+# 每日更新最多一次补多少个交易日；缺得更多时请重新运行历史下载
+max_catchup_days = 30
+# 每天几点（北京时间）之后，当天的数据才算已经入库。BaoStock 17:30 完成日线、18:00 完成复权因子。
+# 在这之前运行下载或更新，只处理到前一天，避免把盘中的半截行情当成当天的日线。
+data_ready_hour = 18

@@ -1,9 +1,8 @@
-"""找到 quant-lab 的行情目录、读出全市场数据、带缓存地求值、解析公式、信号统计。"""
+"""行情数据（下载到 TSP 数据目录下的 freecn 文件夹）、带缓存的求值、公式解析、信号统计。"""
 
 from __future__ import annotations
 
-import json
-import os
+import shutil
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
@@ -13,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from .ql import loader
+from .ql import data as ql_data
 from .ql.backtest.signals import Costs, signal_frequency, signal_list, signal_stats
 from .ql.blocks import (
     Block,
@@ -25,74 +24,47 @@ from .ql.blocks import (
     rendered_formula,
     split_formula,
 )
-from .ql.core.errors import DataError, QuantLabError
+from .ql.core import config as ql_config
+from .ql.core.errors import ConflictError, DataError, QuantLabError
 from .ql.core.panel import Panel
+from .ql.data import store as ql_store
 
-ENV_DATA_DIR = "TDX_FORMULA_DATA_DIR"
 _CACHE_SIZE = 64
+# 从别处导入行情时要拷的东西（quant-lab 的 data/market 就是这个结构）
+_MARKET_ITEMS = ("daily", "index", "calendar.parquet", "securities.parquet", "industry.parquet", "meta.json",
+                 "progress.json")
 
 
 class FormulaService:
-    """一个进程里只有一份。``root`` 是扩展自己的数据目录（保存设置和粘贴过的公式）。"""
+    """一个进程里只有一份。``data_dir`` 是行情数据目录（TSP 数据目录下的 freecn）。"""
 
-    def __init__(self, root: Path, repo_root: Path) -> None:
-        self._root = root
-        self._repo_root = repo_root
+    def __init__(self, data_dir: Path) -> None:
+        self._data_dir = data_dir
         self._lock = threading.Lock()
         self._cache: OrderedDict[tuple[Any, ...], tuple[np.ndarray, np.ndarray]] = OrderedDict()
+        ql_config.set_data_dir(data_dir)
 
-    # ---------------- 行情目录 ----------------
-    def _config_path(self) -> Path:
-        return self._root / "config.json"
+    # ---------------- 行情数据 ----------------
+    @property
+    def data_dir(self) -> Path:
+        return self._data_dir
 
-    def _read_config(self) -> dict[str, Any]:
-        try:
-            return json.loads(self._config_path().read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
+    def has_data(self) -> bool:
+        return ql_store.latest_date() is not None and bool(ql_store.list_daily_codes())
 
-    def _write_json(self, path: Path, payload: Any) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, path)
+    def latest_data_date(self) -> str | None:
+        """行情更新到哪一天了。只读概况文件，不用把全市场数据读进内存。"""
+        day = ql_store.updated_through() or ql_store.latest_date()
+        return day.isoformat() if day else None
 
-    @staticmethod
-    def _market_of(path: Path) -> Path | None:
-        """给的可以是 quant-lab 的 data 目录，也可以直接是其中的 market 目录。"""
-        for candidate in (path, path / "market"):
-            if (candidate / "daily").is_dir():
-                return candidate
-        return None
+    def stock_names(self) -> dict[str, str]:
+        df = ql_store.read_securities()
+        return dict(zip(df["code"].astype(str), df["name"].astype(str), strict=False))
 
-    def market_dir(self) -> tuple[Path | None, str]:
-        """行情目录和它是怎么找到的。依次看：页面上设置的、环境变量、和本项目并排放着的 quant-lab。"""
-        saved = str(self._read_config().get("data_dir") or "").strip()
-        candidates = [
-            (saved, "页面上设置的目录"),
-            (os.environ.get(ENV_DATA_DIR, "").strip(), f"环境变量 {ENV_DATA_DIR}"),
-            (str(self._repo_root.parent / "quant-lab" / "data"), "与本项目并排的 quant-lab"),
-        ]
-        for text, how in candidates:
-            if text:
-                found = self._market_of(Path(text).expanduser())
-                if found is not None:
-                    return found, how
-        return None, ""
-
-    def set_data_dir(self, text: str) -> None:
-        text = text.strip()
-        if text and self._market_of(Path(text).expanduser()) is None:
-            raise QuantLabError(f"在 {text} 里没有找到 quant-lab 的行情数据（应该有 market/daily 这个文件夹）。")
-        self._write_json(self._config_path(), {**self._read_config(), "data_dir": text})
-        self.clear_cache()
-
-    # ---------------- 全市场数据 ----------------
     def panel(self, start: str | None = None, end: str | None = None) -> Panel:
-        market, _ = self.market_dir()
-        if market is None:
-            raise DataError("还没有找到 quant-lab 的行情数据。请先在本页设置行情目录。")
-        panel = loader.build_panel(market)
+        if not self.has_data():
+            raise DataError("还没有行情数据。请先到“数据”页下载历史行情。")
+        panel = ql_store.build_panel()
         lo, hi = _day(start, "开始"), _day(end, "结束")
         if lo or hi:
             panel = panel.slice_dates(lo, hi)
@@ -101,23 +73,50 @@ class FormulaService:
         return panel
 
     def status(self) -> dict[str, Any]:
-        market, how = self.market_dir()
+        """行情数据的概况。读得很快，不会把全市场数据读进内存。"""
         costs = Costs()
-        out: dict[str, Any] = {
-            "configured": market is not None, "data_dir": str(market) if market else "", "found_by": how,
-            "saved_data_dir": str(self._read_config().get("data_dir") or ""),
-            "has_data": False, "latest_date": None, "first_date": None, "stock_count": 0,
-            "float_shares_ready": False,
+        progress = ql_store.Progress.load()
+        codes = ql_store.list_daily_codes()
+        latest = ql_store.latest_date()
+        shares_done = progress.count_done(ql_store.ITEM_SHARES, codes)
+        st_done = progress.count_done(ql_store.ITEM_ST, codes)
+        return {
+            "has_data": bool(codes) and latest is not None, "data_dir": str(self._data_dir),
+            "first_date": progress.start, "latest_date": latest.isoformat() if latest else None,
+            "stock_count": len(codes), "download_finished": progress.finished,
+            "st_known": bool(codes) and st_done == len(codes),
+            "float_shares_ready": bool(codes) and shares_done == len(codes),
             "costs": {"commission": costs.commission, "stamp_tax": costs.stamp_tax, "slippage": costs.slippage},
         }
-        if market is None or loader.fingerprint(market) is None:
-            return out
-        panel = loader.build_panel(market)
-        known = np.isfinite(panel.float_shares[-1][panel.listed[-1]])
-        out.update(has_data=True, first_date=str(panel.dates[0]), latest_date=str(panel.dates[-1]),
-                   stock_count=int(panel.shape[1]),
-                   float_shares_ready=bool(known.size and known.mean() > 0.95))
-        return out
+
+    def import_market(self, source: str) -> dict[str, Any]:
+        """从已有的行情目录（例如 quant-lab 的 data 目录）拷一份过来，省掉重新下载。原目录只读、不改动。"""
+        text = source.strip()
+        if not text:
+            raise QuantLabError("请填写要导入的行情目录。")
+        root = Path(text).expanduser()
+        market = next((c for c in (root, root / "market") if (c / "daily").is_dir()), None)
+        if market is None:
+            raise QuantLabError(f"在 {text} 里没有找到行情数据（应该有 market/daily 这个文件夹）。")
+        if market.resolve() == ql_config.get_settings().market_dir.resolve():
+            raise QuantLabError("这就是现在正在用的行情目录，不需要导入。")
+        if ql_data.get_progress().get("running"):
+            raise ConflictError("正在下载行情，等它结束后再导入。")
+        target = ql_config.get_settings().market_dir
+        target.mkdir(parents=True, exist_ok=True)
+        copied = 0
+        for name in _MARKET_ITEMS:
+            src = market / name
+            if src.is_dir():
+                shutil.copytree(src, target / name, dirs_exist_ok=True,
+                                ignore=shutil.ignore_patterns("*.tmp"))
+                copied += sum(1 for _ in (target / name).iterdir())
+            elif src.is_file():
+                shutil.copy2(src, target / name)
+                copied += 1
+        ql_store.clear_panel_cache()
+        self.clear_cache()
+        return {"copied": copied, **self.status()}
 
     # ---------------- 求值 ----------------
     def clear_cache(self) -> None:
@@ -183,8 +182,7 @@ class FormulaService:
         panel = self.panel(start, end)
         signal = self._signal(panel, conditions, universe)
         total, records = signal_list(signal, panel, limit=limit, offset=offset)
-        market, _ = self.market_dir()
-        names = loader.stock_names(market) if market else {}
+        names = self.stock_names()
         return {"total": total, "items": [
             {"date": r.date, "code": r.code, "name": names.get(r.code, ""),
              "returns": {str(h): v for h, v in r.returns.items()}} for r in records]}
@@ -194,8 +192,7 @@ class FormulaService:
         panel = self.panel()
         signal = self._signal(panel, conditions, universe)
         cols = np.nonzero(signal[-1])[0]
-        market, _ = self.market_dir()
-        names = loader.stock_names(market) if market else {}
+        names = self.stock_names()
         prev = panel.raw_preclose[-1]
         items = []
         for c in cols:

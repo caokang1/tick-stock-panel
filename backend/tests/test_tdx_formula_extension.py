@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import types
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.custom.tdx_formula import EXTENSION_API_VERSION, EXTENSION_ID
-from app.custom.tdx_formula.ql import loader
+from app.custom.tdx_formula.ql.data import store as ql_store
 from app.custom.tdx_formula.routes import PREFIX, build_router
 from app.extensions import BACKEND_EXTENSION_API_VERSION
 
@@ -22,9 +23,10 @@ DAYS = pd.bdate_range("2024-01-02", periods=60)
 CODES = ("sh.600001", "sh.600002", "sz.000003")
 
 
-def make_market(root: Path) -> Path:
-    """三只股票 60 个交易日。sh.600001 一路上涨，sh.600002 一路下跌，sz.000003 先跌后涨。"""
-    market = root / "quant-lab" / "data" / "market"
+def make_market(root: Path, where: str = "tsp-data/freecn") -> Path:
+    """三只股票 60 个交易日。sh.600001 一路上涨，sh.600002 一路下跌，sz.000003 先跌后涨。
+    默认直接造在扩展自己的行情目录里（TSP 数据目录下的 freecn）。"""
+    market = root / where / "market"
     (market / "daily").mkdir(parents=True)
     n = len(DAYS)
     closes = {
@@ -51,20 +53,25 @@ def make_market(root: Path) -> Path:
     }), market / "securities.parquet")
     pq.write_table(pa.table({"code": list(CODES), "industry": ["货币金融服务", "医药制造业", ""]}),
                    market / "industry.parquet")
+    latest = str(DAYS[-1].date())
+    (market / "meta.json").write_text(f'{{"latest_date": "{latest}", "updated_through": "{latest}"}}',
+                                      encoding="utf-8")
+    done = {"daily": "done", "factor": "done", "st": "done", "shares": "done"}
+    (market / "progress.json").write_text(json.dumps({
+        "start": str(DAYS[0].date()), "calendar": True, "securities": True, "indices": {},
+        "stocks": {c: done for c in CODES}, "finished": True}), encoding="utf-8")
     return market
 
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    monkeypatch.delenv("TDX_FORMULA_DATA_DIR", raising=False)
-    loader.clear_cache()
+    ql_store._panel_memory.clear()
     app = FastAPI()
     app.state.repo = types.SimpleNamespace(store=types.SimpleNamespace(data_dir=tmp_path / "tsp-data"))
-    # 项目根目录指到临时目录里：这样"并排的 quant-lab"也在临时目录里找，碰不到真实数据
-    app.include_router(build_router(repo_root=tmp_path / "tsp", background=False))
+    app.include_router(build_router(background=False))
     with TestClient(app) as client:
         yield client, tmp_path
-    loader.clear_cache()
+    ql_store._panel_memory.clear()
 
 
 ABOVE_MA = {"pasted": {"name": "站上均线", "formula": "C>MA(C,{n});",
@@ -78,32 +85,35 @@ def test_extension_declares_a_valid_identity():
 
 
 def test_without_data_the_page_is_told_what_to_do(env):
-    client, _ = env
-    status = client.get(f"{PREFIX}/status").json()
-    assert status["configured"] is False and status["has_data"] is False
-    r = client.post(f"{PREFIX}/stats", json={"conditions": [ABOVE_MA], "universe": ALL})
-    assert r.status_code == 400 and "设置行情目录" in r.json()["detail"]
-    r = client.put(f"{PREFIX}/config", json={"data_dir": str(env[1] / "nowhere")})
-    assert r.status_code == 400 and "没有找到" in r.json()["detail"]
-
-
-def test_finds_a_sibling_quant_lab_and_reads_it_without_writing(env):
     client, root = env
-    market = make_market(root)
-    before = sorted(str(p.relative_to(market)) for p in market.rglob("*"))
     status = client.get(f"{PREFIX}/status").json()
-    assert status["configured"] and status["has_data"] and status["found_by"] == "与本项目并排的 quant-lab"
-    assert status["stock_count"] == 3 and status["latest_date"] == str(DAYS[-1].date())
-    assert status["float_shares_ready"] is True
-    client.post(f"{PREFIX}/stats", json={"conditions": [ABOVE_MA], "universe": ALL})
-    assert sorted(str(p.relative_to(market)) for p in market.rglob("*")) == before  # 只读：一个文件都没多
+    assert status["has_data"] is False and status["stock_count"] == 0
+    assert status["data_dir"] == str(root / "tsp-data" / "freecn")
+    r = client.post(f"{PREFIX}/stats", json={"conditions": [ABOVE_MA], "universe": ALL})
+    assert r.status_code == 400 and "下载历史行情" in r.json()["detail"]
 
 
-def test_data_dir_can_be_set_from_the_page(env, tmp_path_factory):
-    client, _ = env
-    other = make_market(tmp_path_factory.mktemp("elsewhere"))
-    status = client.put(f"{PREFIX}/config", json={"data_dir": str(other.parent)}).json()  # 给 data 目录也行
-    assert status["has_data"] and status["found_by"] == "页面上设置的目录" and status["data_dir"] == str(other)
+def test_status_reads_the_extension_own_market_folder(env):
+    client, root = env
+    make_market(root)
+    status = client.get(f"{PREFIX}/status").json()
+    assert status["has_data"] and status["stock_count"] == 3 and status["latest_date"] == str(DAYS[-1].date())
+    assert status["st_known"] and status["float_shares_ready"] and status["download_finished"]
+
+
+def test_existing_market_data_can_be_imported_instead_of_downloading_again(env):
+    client, root = env
+    source = make_market(root, where="quant-lab/data")  # 例如已有的 quant-lab 行情目录
+    before = sorted(str(p.relative_to(source)) for p in source.rglob("*"))
+    r = client.post(f"{PREFIX}/data/import", json={"path": str(root / "nowhere")})
+    assert r.status_code == 400 and "没有找到" in r.json()["detail"]
+    done = client.post(f"{PREFIX}/data/import", json={"path": str(source.parent)}).json()  # 给 data 目录也行
+    assert done["has_data"] and done["stock_count"] == 3 and done["copied"] >= 7
+    assert sorted(str(p.relative_to(source)) for p in source.rglob("*")) == before  # 原目录没有被改动
+    stats = client.post(f"{PREFIX}/stats", json={"conditions": [ABOVE_MA], "universe": ALL})
+    assert stats.status_code == 200 and stats.json()["frequency"]["total"] > 0
+    again = client.post(f"{PREFIX}/data/import", json={"path": str(root / "tsp-data" / "freecn")})
+    assert again.status_code == 400 and "正在用的" in again.json()["detail"]
 
 
 def test_parse_splits_a_formula_into_adjustable_conditions(env):
@@ -172,7 +182,7 @@ def test_a_fake_repository_never_becomes_a_directory_on_disk(tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
     app = FastAPI()
     app.state.repo = MagicMock()
-    app.include_router(build_router(repo_root=tmp_path / "tsp"))
+    app.include_router(build_router(background=False))
     with TestClient(app) as client:
         assert client.get(f"{PREFIX}/status").status_code == 503
         r = client.post(f"{PREFIX}/strategies", json={"name": "x", "config": {"conditions": [ABOVE_MA]}})
@@ -358,3 +368,111 @@ def test_settings_change_costs_within_limits(live_env):
     assert changed["costs"]["slippage"] == 0.002 and changed["initial_cash"] == 200_000
     assert client.put(f"{PREFIX}/settings", json={"costs": {"slippage": 0.5}}).status_code == 400
     assert client.put(f"{PREFIX}/settings", json={"initial_cash": 5}).status_code == 400
+
+
+# ---------------- 行情的下载、限速和每天的自动更新 ----------------
+def test_sources_show_limits_and_refuse_values_above_the_official_caps(env):
+    client, _ = env
+    body = client.get(f"{PREFIX}/data/sources").json()
+    names = [s["name"] for s in body["sources"]]
+    assert set(names) == {"akshare_sina", "akshare_tx", "akshare_em", "baostock"}
+    bao = next(s for s in body["sources"] if s["name"] == "baostock")
+    assert bao["label"].startswith("BaoStock") and bao["state"] == "ok" and bao["today_requests"] == 0
+    # 默认值和 quant-lab 一样：严格串行、每天 20000 次（官方上限 50000）
+    assert bao["policy"]["max_concurrent"] == 1 and bao["policy"]["daily_request_cap"] == 20000
+    assert bao["policy"]["official_daily_limit"] == 50000 and bao["defaults"] == bao["policy"]
+    assert body["priority"]["stock_daily"][0] == "akshare_sina" and "float_shares" in body["priority"]
+
+    slower = client.put(f"{PREFIX}/data/sources/baostock", json={"daily_request_cap": 10000}).json()
+    assert next(s for s in slower["sources"] if s["name"] == "baostock")["policy"]["daily_request_cap"] == 10000
+    too_many = client.put(f"{PREFIX}/data/sources/baostock", json={"daily_request_cap": 60000})
+    assert too_many.status_code == 400 and "官方" in too_many.json()["detail"]
+    parallel = client.put(f"{PREFIX}/data/sources/baostock", json={"max_concurrent": 2})
+    assert parallel.status_code == 400
+    unknown = client.put(f"{PREFIX}/data/sources/wind", json={"enabled": False})
+    assert unknown.status_code == 400
+    again = client.get(f"{PREFIX}/data/sources").json()  # 被拒绝的修改没有留下痕迹
+    assert next(s for s in again["sources"] if s["name"] == "baostock")["policy"]["daily_request_cap"] == 10000
+
+
+def test_schedule_time_must_be_after_the_data_is_ready(env):
+    client, _ = env
+    base = client.get(f"{PREFIX}/data/schedule").json()
+    assert base == {"run_time": "18:30", "run_time_min": "18:00", "run_time_max": "23:30"}
+    assert client.put(f"{PREFIX}/data/schedule", json={"run_time": "19:15"}).json()["run_time"] == "19:15"
+    early = client.put(f"{PREFIX}/data/schedule", json={"run_time": "15:30"})
+    assert early.status_code == 400 and "18:00" in early.json()["detail"]
+    assert client.put(f"{PREFIX}/data/schedule", json={"run_time": "晚上"}).status_code == 400
+
+
+def test_auto_update_is_due_only_after_the_set_time_on_a_trading_weekday(live_env, monkeypatch):
+    from datetime import datetime
+
+    from app.custom.tdx_formula import data_service as ds
+
+    client, _market = live_env
+    client.get(f"{PREFIX}/data/sources")  # 让服务对象建出来
+    svc: ds.DataService = None  # type: ignore[assignment]
+    original = ds.DataService.progress
+
+    def spy(self):
+        nonlocal svc
+        svc = self
+        return original(self)
+
+    monkeypatch.setattr(ds.DataService, "progress", spy)
+    client.get(f"{PREFIX}/data/progress")
+    monkeypatch.setattr(ds, "libraries_ready", lambda: True)
+    # 行情到 2024-03-25（周一）。之后一个周二：
+    assert svc.update_due(datetime(2024, 3, 26, 17, 0)) is False  # 还没到设定的时间
+    assert svc.update_due(datetime(2024, 3, 26, 18, 30)) is True
+    assert svc.update_due(datetime(2024, 3, 30, 19, 0)) is False  # 周六
+    assert svc.update_due(datetime(2024, 3, 25, 19, 0)) is False  # 当天的行情已经有了
+    calls = []
+    monkeypatch.setattr(ds.DataService, "_quiet_update", lambda self: calls.append(1))
+    from app.custom.tdx_formula.ql.core import clock
+
+    clock.set_fixed(datetime(2024, 3, 26, 18, 31))
+    svc.tick()
+    svc.tick()  # 刚试过一次：半小时内不再试
+    assert len(calls) == 1
+    clock.set_fixed(datetime(2024, 3, 26, 19, 5))
+    svc.tick()
+    assert len(calls) == 2
+    monkeypatch.setattr(ds, "libraries_ready", lambda: False)
+    assert svc.update_due(datetime(2024, 3, 27, 19, 0)) is False  # 取数用的库没装：不自动更新
+
+
+def test_download_needs_the_fetching_libraries(env, monkeypatch):
+    from app.custom.tdx_formula import data_service as ds
+
+    client, _ = env
+    monkeypatch.setattr(ds, "libraries_ready", lambda: False)
+    assert client.get(f"{PREFIX}/data/sources").json()["libraries_ready"] is False
+    for path in ("data/download", "data/update"):
+        r = client.post(f"{PREFIX}/{path}", json={})
+        assert r.status_code == 400 and "akshare" in r.json()["detail"]
+    assert client.get(f"{PREFIX}/data/progress").json()["running"] is False
+
+
+def test_progress_shows_whichever_finished_last(env, monkeypatch):
+    from datetime import datetime
+
+    from app.custom.tdx_formula import data_service as ds
+
+    client, _ = env
+    monkeypatch.setattr(ds, "libraries_ready", lambda: True)
+    fake = {"running": False, "phase": "结束", "total": 3, "done": {"daily": 3}, "message": "历史下载完成",
+            "finished_at": "2024-03-26T10:00:00"}
+    monkeypatch.setattr(ds.ql_data, "get_progress", lambda: dict(fake))
+    assert client.get(f"{PREFIX}/data/progress").json()["message"] == "历史下载完成"
+    # 之后又更新了一次：显示更新的结果，而不是早先那次下载的
+    monkeypatch.setattr(ds.ql_data, "update_daily", lambda: type("R", (), {"message": "已补上 1 个交易日"})())
+    monkeypatch.setattr(ds.clock, "now", lambda: datetime(2024, 3, 26, 18, 31))
+    monkeypatch.setattr(ds.threading, "Thread", lambda target, **_k: type("T", (), {"start": lambda self: target()})())
+    client.post(f"{PREFIX}/data/update", json={})
+    body = client.get(f"{PREFIX}/data/progress").json()
+    assert body == {"running": False, "kind": "update", "stage": None, "done": 0, "total": 0,
+                    "eta_seconds": None, "message": "已补上 1 个交易日"}
+    fake["finished_at"] = "2024-03-27T09:00:00"  # 再之后又下载了一次
+    assert client.get(f"{PREFIX}/data/progress").json()["message"] == "历史下载完成"

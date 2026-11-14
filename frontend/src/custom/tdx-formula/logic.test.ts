@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import type { Block, Options, RealPosition, RealTodo } from './client'
+import type { Block, Options, RealPosition, RealTodo, SourcePolicy } from './client'
 import {
-  capText, capitalError, conditionFromParsed, conditionName, configFromForm, costFromInput, costInput, costText,
-  curveRange, defaultTab, defaultUniverse, formFromConfig, fractionOf, frequencyText, initialCashError,
-  initialTradeForm, linePath, money, needsCode, needsShares, newRankFactor, paramValue, pct, pendingText,
-  percentInput, rankFromForm, rankToForm, statusLabel, timingFromForm, timingToForm, todayText, tone, toPanelSymbol,
-  tradeFormError, tradeFromForm, tradeInput, tradeToForm, withParam,
+  capText, capabilityLabel, capitalError, conditionFromParsed, conditionName, configFromForm, costFromInput, costInput,
+  costText, curveRange, dailyCapText, defaultTab, defaultUniverse, etaText, formFromConfig, fractionOf, frequencyText,
+  initialCashError, initialTradeForm, limitsBody, limitsForm, linePath, money, needsCode, needsShares, newRankFactor,
+  paramValue, pct, pendingText, percentInput, progressPercent, rankFromForm, rankToForm, runTimeError, sourceState,
+  statusLabel, timingFromForm, timingToForm, todayText, tone, toPanelSymbol, tradeFormError, tradeFromForm, tradeInput,
+  tradeToForm, withParam,
 } from './logic'
 
 const parsed = {
@@ -299,5 +300,118 @@ describe('净值曲线', () => {
     expect(linePath([0, 1, 0.5], 0, 1, 100, 50)).toBe('M0.0,50.0L50.0,0.0L100.0,25.0')
     expect(linePath([null, 0, null, 1, 1], 0, 1, 100, 50)).toBe('M25.0,50.0M75.0,0.0L100.0,0.0')
     expect(linePath([], 0, 1, 100, 50)).toBe('')
+  })
+})
+
+describe('「数据」页', () => {
+  const free: SourcePolicy = {
+    enabled: true, max_concurrent: 1, daily_request_cap: 0, min_interval_seconds: 0.5, jitter_seconds: 0.3,
+    timeout_seconds: 30, max_retries: 2, stop_after_consecutive_failures: 5, cooldown_minutes_on_reject: 10,
+    count_pages_as_requests: false, official_daily_limit: null, official_max_concurrent: null,
+  }
+  const official: SourcePolicy = {
+    ...free, daily_request_cap: 20000, min_interval_seconds: 0.3, jitter_seconds: 0.2, timeout_seconds: 60,
+    cooldown_minutes_on_reject: 360, count_pages_as_requests: true, official_daily_limit: 50000,
+    official_max_concurrent: 1,
+  }
+
+  it('还没有行情时先去「数据」页', () => {
+    expect(defaultTab(0, false)).toBe('data')
+    expect(defaultTab(3, false)).toBe('data')
+    expect(defaultTab(3, true)).toBe('today')
+    expect(defaultTab(0, true)).toBe('strategy')
+  })
+
+  it('还要多久：按小时、分钟说，不知道时不说', () => {
+    expect(etaText(null)).toBe('')
+    expect(etaText(undefined)).toBe('')
+    expect(etaText(NaN)).toBe('')
+    expect(etaText(20)).toBe('不到 1 分钟')
+    expect(etaText(90)).toBe('约 2 分钟')
+    expect(etaText(3600)).toBe('约 1 小时')
+    expect(etaText(3 * 3600 + 5 * 60 + 10)).toBe('约 3 小时 5 分钟')
+    expect(etaText(3599)).toBe('约 1 小时')
+  })
+
+  it('进度条的百分比：总数未知是 0，不超过 100', () => {
+    expect(progressPercent(0, 0)).toBe(0)
+    expect(progressPercent(5, 0)).toBe(0)
+    expect(progressPercent(1, 3)).toBe(33)
+    expect(progressPercent(5000, 5000)).toBe(100)
+    expect(progressPercent(6, 5)).toBe(100)
+  })
+
+  it('来源状态、数据种类的中文名，不认识的原样显示', () => {
+    expect(sourceState('ok')).toEqual({ label: '正常', tone: 'accent' })
+    expect(sourceState('cooldown')).toEqual({ label: '暂停中', tone: 'warning' })
+    expect(sourceState('cap_reached')).toEqual({ label: '已达今日上限', tone: 'danger' })
+    expect(sourceState('disabled')).toEqual({ label: '已停用', tone: 'muted' })
+    expect(sourceState('别的')).toEqual({ label: '别的', tone: 'muted' })
+    expect(capabilityLabel('stock_daily')).toBe('个股日线')
+    expect(capabilityLabel('float_shares')).toBe('流通股本')
+    expect(capabilityLabel('market_snapshot')).toBe('当日全市场行情')
+    expect(capabilityLabel('new_kind')).toBe('new_kind')
+    expect(dailyCapText(0)).toBe('不限')
+    expect(dailyCapText(20000)).toBe('20,000')
+  })
+
+  it('限速表单 → 发给后端的修改：只带可以改的项', () => {
+    const form = limitsForm(official)
+    expect(form).toEqual({
+      enabled: true, daily_request_cap: '20000', min_interval_seconds: '0.3', jitter_seconds: '0.2',
+      timeout_seconds: '60', max_retries: '2', stop_after_consecutive_failures: '5', cooldown_minutes_on_reject: '360',
+    })
+    expect(limitsBody(form, official)).toEqual({
+      ok: true,
+      value: {
+        enabled: true, daily_request_cap: 20000, min_interval_seconds: 0.3, jitter_seconds: 0.2, timeout_seconds: 60,
+        max_retries: 2, stop_after_consecutive_failures: 5, cooldown_minutes_on_reject: 360,
+      },
+    })
+    const off = limitsBody({ ...limitsForm(free), enabled: false, min_interval_seconds: ' 1.5 ' }, free)
+    expect(off.ok && off.value.enabled).toBe(false)
+    expect(off.ok && off.value.min_interval_seconds).toBe(1.5)
+    expect(off.ok && Object.keys(off.value)).not.toContain('max_concurrent')
+  })
+
+  it('限速表单填错时说明是哪一项', () => {
+    const error = (policy: SourcePolicy, changes: Partial<ReturnType<typeof limitsForm>>) => {
+      const result = limitsBody({ ...limitsForm(policy), ...changes }, policy)
+      return result.ok ? null : result.error
+    }
+    expect(error(free, {})).toBeNull()
+    expect(error(free, { max_retries: '' })).toBe('「失败后的重试次数」还没有填')
+    expect(error(free, { timeout_seconds: 'abc' })).toBe('「单次请求超时（秒）」要填数字')
+    expect(error(free, { max_retries: '1.5' })).toBe('「失败后的重试次数」要填整数')
+    expect(error(free, { min_interval_seconds: '0.05' })).toContain('不能小于 0.1 秒')
+    expect(error(free, { min_interval_seconds: '0.1' })).toBeNull()
+    expect(error(free, { jitter_seconds: '-1' })).toBe('「随机抖动上限（秒）」不能是负数')
+    expect(error(free, { timeout_seconds: '0' })).toBe('「单次请求超时（秒）」必须大于 0')
+    expect(error(free, { timeout_seconds: '601' })).toBe('「单次请求超时（秒）」不能超过 600 秒')
+    expect(error(free, { stop_after_consecutive_failures: '0' })).toBe('「连续失败多少次后停止」至少为 1')
+    expect(error(free, { cooldown_minutes_on_reject: '0' })).toContain('至少为 1')
+    expect(error(free, { daily_request_cap: '-1' })).toContain('不能是负数')
+    // 没有官方上限的来源：0 表示不限，暂停时间可以短
+    expect(error(free, { daily_request_cap: '0', cooldown_minutes_on_reject: '5' })).toBeNull()
+  })
+
+  it('有官方上限的来源：每日上限不能不限、不能超过官方的数，暂停不能少于 6 小时', () => {
+    const error = (changes: Partial<ReturnType<typeof limitsForm>>) => {
+      const result = limitsBody({ ...limitsForm(official), ...changes }, official)
+      return result.ok ? null : result.error
+    }
+    expect(error({ daily_request_cap: '0' })).toContain('不能设为 0')
+    expect(error({ daily_request_cap: '50001' })).toContain('不能超过官方每日上限 50000')
+    expect(error({ daily_request_cap: '50000' })).toBeNull()
+    expect(error({ cooldown_minutes_on_reject: '359' })).toContain('不能小于 360 分钟')
+  })
+
+  it('每天自动更新的时间要在允许的范围里', () => {
+    expect(runTimeError('18:30', '18:00', '23:30')).toBeNull()
+    expect(runTimeError('18:00', '18:00', '23:30')).toBeNull()
+    expect(runTimeError('23:30', '18:00', '23:30')).toBeNull()
+    expect(runTimeError('17:59', '18:00', '23:30')).toBe('每天自动更新的时间要在 18:00 到 23:30 之间')
+    expect(runTimeError('23:31', '18:00', '23:30')).toContain('18:00 到 23:30')
+    expect(runTimeError('', '18:00', '23:30')).toBe('请填一个时间，例如 18:30')
   })
 })

@@ -1,0 +1,2 @@
+akshare>=1.15
+baostock>=0.8.9

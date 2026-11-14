@@ -46,16 +46,85 @@ export interface ParseResult {
 }
 
 export interface Status {
-  configured: boolean
-  data_dir: string
-  found_by: string
-  saved_data_dir: string
   has_data: boolean
+  /** 行情存在本机的哪个文件夹 */
+  data_dir: string
   first_date: string | null
   latest_date: string | null
   stock_count: number
+  /** 历史行情是否已经全部下完 */
+  download_finished: boolean
+  st_known: boolean
   float_shares_ready: boolean
   costs: { commission: number; stamp_tax: number; slippage: number }
+}
+
+/** 一个数据来源的限速设置 */
+export interface SourcePolicy {
+  enabled: boolean
+  max_concurrent: number
+  /** 0 表示不限 */
+  daily_request_cap: number
+  min_interval_seconds: number
+  jitter_seconds: number
+  timeout_seconds: number
+  max_retries: number
+  stop_after_consecutive_failures: number
+  cooldown_minutes_on_reject: number
+  count_pages_as_requests: boolean
+  official_daily_limit: number | null
+  official_max_concurrent: number | null
+}
+
+/** 页面上可以改的限速项（并发数、翻页是否计数和官方上限不在这里改） */
+export interface SourcePolicyUpdate {
+  enabled: boolean
+  daily_request_cap: number
+  min_interval_seconds: number
+  jitter_seconds: number
+  timeout_seconds: number
+  max_retries: number
+  stop_after_consecutive_failures: number
+  cooldown_minutes_on_reject: number
+}
+
+export type SourceState = 'ok' | 'cooldown' | 'cap_reached' | 'disabled'
+
+export interface DataSourceInfo {
+  name: string
+  label: string
+  state: SourceState
+  state_message: string | null
+  cooldown_until: string | null
+  today_requests: number
+  policy: SourcePolicy
+  defaults: SourcePolicy
+}
+
+export interface DataSources {
+  sources: DataSourceInfo[]
+  /** 每一类数据依次试哪些来源 */
+  priority: Record<string, string[]>
+  /** 取数用的两个库（akshare、baostock）是否已经装好 */
+  libraries_ready: boolean
+  /** 只在保存限速设置后返回：可以保存、但需要提醒的事 */
+  warnings?: string[]
+}
+
+export interface DataProgress {
+  running: boolean
+  kind: 'download' | 'update' | null
+  stage: string | null
+  done: number
+  total: number
+  eta_seconds: number | null
+  message: string | null
+}
+
+export interface DataSchedule {
+  run_time: string
+  run_time_min: string
+  run_time_max: string
 }
 
 export interface StatRow {
@@ -418,7 +487,20 @@ async function request<T>(endpoint: string, method = 'GET', body?: unknown, time
 
 export const tdxApi = {
   status: () => request<Status>('status'),
-  setDataDir: (data_dir: string) => request<Status>('config', 'PUT', { data_dir }),
+
+  dataSources: () => request<DataSources>('data/sources'),
+  updateDataSource: (name: string, body: SourcePolicyUpdate) =>
+    request<DataSources>(`data/sources/${seg(name)}`, 'PUT', body),
+  dataProgress: () => request<DataProgress>('data/progress'),
+  /** 开始或继续下载历史行情；start 不填时从默认的起始日期开始 */
+  startDownload: (start?: string) => request<DataProgress>('data/download', 'POST', { start: start || null }),
+  stopDownload: () => request<{ ok: boolean }>('data/stop', 'POST'),
+  startUpdate: () => request<DataProgress>('data/update', 'POST'),
+  /** 从已有的行情目录拷一份过来；文件多的时候要几分钟 */
+  importData: (path: string) => request<Status & { copied: number }>('data/import', 'POST', { path }, 600_000),
+  dataSchedule: () => request<DataSchedule>('data/schedule'),
+  setDataSchedule: (run_time: string) => request<DataSchedule>('data/schedule', 'PUT', { run_time }),
+
   parse: (formula: string) => request<ParseResult>('parse', 'POST', { formula }),
   stats: (body: ConditionsBody) => request<StatsResult>('stats', 'POST', body),
   signals: (body: ConditionsBody, limit = 50) =>
@@ -482,4 +564,7 @@ export const tdxKeys = {
   backtest: (id: string) => [...ROOT, 'backtest', id] as const,
   today: [...ROOT, 'today'] as const,
   settings: [...ROOT, 'settings'] as const,
+  dataSources: [...ROOT, 'data', 'sources'] as const,
+  dataProgress: [...ROOT, 'data', 'progress'] as const,
+  dataSchedule: [...ROOT, 'data', 'schedule'] as const,
 }

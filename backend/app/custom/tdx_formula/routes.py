@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from .data_service import DataService
 from .live_service import LiveService
 from .ql.core.errors import FormulaError, QuantLabError
 from .service import FormulaService
@@ -37,8 +38,31 @@ class SignalsRequest(ConditionsRequest):
     offset: int = Field(default=0, ge=0)
 
 
-class ConfigRequest(BaseModel):
-    data_dir: str = Field(max_length=500)
+class ImportRequest(BaseModel):
+    path: str = Field(max_length=500)
+
+
+class DownloadRequest(BaseModel):
+    start: str | None = Field(default=None, max_length=10)
+
+
+class SourcePolicyUpdate(BaseModel):
+    """一个数据来源的限速设置；不传的不改。官方上限只用于校验，不能改。"""
+
+    enabled: bool | None = None
+    max_concurrent: int | None = None
+    daily_request_cap: int | None = None
+    min_interval_seconds: float | None = None
+    jitter_seconds: float | None = None
+    timeout_seconds: float | None = None
+    max_retries: int | None = None
+    stop_after_consecutive_failures: int | None = None
+    cooldown_minutes_on_reject: int | None = None
+    count_pages_as_requests: bool | None = None
+
+
+class ScheduleUpdate(BaseModel):
+    run_time: str = Field(max_length=5)
 
 
 class StrategyConfig(BaseModel):
@@ -107,14 +131,12 @@ def _fail(e: QuantLabError) -> HTTPException:
     return HTTPException(status_code=e.http_status, detail=detail)
 
 
-def build_router(repo_root: Path | None = None, background: bool = True) -> APIRouter:
-    """repo_root：本项目的根目录，用来找并排放着的 quant-lab；background：是否启动每分钟检查一次的后台线程。
-    两个参数都是给测试用的。"""
-    project_root = repo_root or Path(__file__).resolve().parents[4]
-    services: dict[str, tuple[FormulaService, LiveService]] = {}
+def build_router(background: bool = True) -> APIRouter:
+    """background：是否启动每分钟检查一次的后台线程（测试里关掉）。"""
+    services: dict[str, tuple[FormulaService, LiveService, DataService]] = {}
     guard = threading.Lock()
 
-    def pair(app: Any) -> tuple[FormulaService, LiveService]:
+    def pair(app: Any) -> tuple[FormulaService, LiveService, DataService]:
         repo = getattr(app.state, "repo", None)
         if repo is None:
             raise HTTPException(status_code=503, detail="数据仓库还没有就绪，请稍后再试。")
@@ -126,8 +148,9 @@ def build_router(repo_root: Path | None = None, background: bool = True) -> APIR
         with guard:
             if key not in services:
                 root = Path(raw) / "user_data" / "extensions" / "tdx_formula"
-                formulas = FormulaService(root, project_root)
-                services[key] = (formulas, LiveService(formulas, root))
+                # 行情放在 TSP 数据目录下的 freecn 文件夹里，「免费公开来源」数据源插件读的也是这一份
+                formulas = FormulaService(Path(raw) / "freecn")
+                services[key] = (formulas, LiveService(formulas, root), DataService(formulas))
             return services[key]
 
     def formulas(request: Request) -> FormulaService:
@@ -135,6 +158,9 @@ def build_router(repo_root: Path | None = None, background: bool = True) -> APIR
 
     def live(request: Request) -> LiveService:
         return pair(request.app)[1]
+
+    def data(request: Request) -> DataService:
+        return pair(request.app)[2]
 
     def run(fn: Any, *args: Any, **kwargs: Any) -> Any:
         try:
@@ -144,14 +170,16 @@ def build_router(repo_root: Path | None = None, background: bool = True) -> APIR
 
     @asynccontextmanager
     async def lifespan(app: Any):
-        """每分钟看一眼：quant-lab 的行情到了新的一天、又有运行中的策略，就生成当天的提醒并推送。"""
+        """每分钟看一眼：到了设定的时间就更新当天的行情；行情到了新的一天、又有运行中的策略，就生成提醒并推送。"""
         stopping = threading.Event()
         thread = None
         if background:
             def loop() -> None:
                 while not stopping.wait(TICK_SECONDS):
                     try:
-                        pair(app)[1].tick()
+                        _, live_service, data_service = pair(app)
+                        data_service.tick()
+                        live_service.tick()
                     except HTTPException:
                         pass  # 数据仓库还没就绪，下一轮再看
                     except Exception:
@@ -174,11 +202,45 @@ def build_router(repo_root: Path | None = None, background: bool = True) -> APIR
     def status(request: Request) -> dict[str, Any]:
         return run(formulas(request).status)
 
-    @router.put("/config")
-    def config(body: ConfigRequest, request: Request) -> dict[str, Any]:
-        svc = formulas(request)
-        run(svc.set_data_dir, body.data_dir)
-        return run(svc.status)
+    # ---------------- 行情的下载、更新和限速 ----------------
+    @router.get("/data/sources")
+    def data_sources(request: Request) -> dict[str, Any]:
+        return run(data(request).sources)
+
+    @router.put("/data/sources/{name}")
+    def data_source_update(name: str, body: SourcePolicyUpdate, request: Request) -> dict[str, Any]:
+        return run(data(request).update_source, name, body.model_dump())
+
+    @router.get("/data/progress")
+    def data_progress(request: Request) -> dict[str, Any]:
+        return run(data(request).progress)
+
+    @router.post("/data/download")
+    def data_download(body: DownloadRequest, request: Request) -> dict[str, Any]:
+        return run(data(request).start_download, body.start)
+
+    @router.post("/data/stop")
+    def data_stop(request: Request) -> dict[str, bool]:
+        run(data(request).stop_download)
+        return {"ok": True}
+
+    @router.post("/data/update")
+    def data_update(request: Request) -> dict[str, Any]:
+        return run(data(request).start_update)
+
+    @router.post("/data/import")
+    def data_import(body: ImportRequest, request: Request) -> dict[str, Any]:
+        return run(formulas(request).import_market, body.path)
+
+    @router.get("/data/schedule")
+    def data_schedule(request: Request) -> dict[str, Any]:
+        return run(data(request).schedule)
+
+    @router.put("/data/schedule")
+    def data_schedule_update(body: ScheduleUpdate, request: Request) -> dict[str, Any]:
+        svc = data(request)
+        run(svc.set_run_time, body.run_time)
+        return run(svc.schedule)
 
     @router.get("/blocks")
     def blocks(request: Request) -> list[dict[str, Any]]:

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import sqlite3
 import threading
@@ -17,8 +16,6 @@ from typing import Any
 
 import numpy as np
 
-from .ql import data as ql_data
-from .ql import loader
 from .ql.backtest import portfolio, result_store, strategy_run, strategy_store
 from .ql.backtest.signals import Costs
 from .ql.blocks import all_blocks
@@ -52,27 +49,16 @@ class LiveService:
 
     # ---------------- 公共 ----------------
     def _panel(self, start: str | None = None, end: str | None = None) -> Panel:
-        market, _ = self._formulas.market_dir()
-        ql_data.set_market_dir(market)
         return self._formulas.panel(start, end)
 
     def _names(self) -> dict[str, str]:
-        market, _ = self._formulas.market_dir()
-        return loader.stock_names(market) if market else {}
+        return self._formulas.stock_names()
 
     def _evaluate(self, block: Any, panel: Panel, params: Mapping[str, float] | None = None) -> np.ndarray:
         return self._formulas._evaluate(block, panel, params)
 
     def latest_data_date(self) -> str | None:
-        """quant-lab 的行情更新到哪一天了。只读它的概况文件，不用把全市场数据读进内存。"""
-        market, _ = self._formulas.market_dir()
-        if market is None:
-            return None
-        try:
-            meta = json.loads((market / "meta.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        return meta.get("updated_through") or meta.get("latest_date")
+        return self._formulas.latest_data_date()
 
     # ---------------- 可选项 ----------------
     @staticmethod
@@ -260,7 +246,6 @@ class LiveService:
 
     def real_view(self, strategy_id: str) -> dict[str, Any]:
         strategy_store.get_strategy(strategy_id)
-        ql_data.set_market_dir(self._formulas.market_dir()[0])
         return real.payload(strategy_id, self._names()) or dict(self._REAL_EMPTY)
 
     def _real_refreshed(self, strategy_id: str) -> dict[str, Any]:
@@ -298,12 +283,10 @@ class LiveService:
         return self._real_refreshed(strategy_id)
 
     def real_edit(self, position_id: int, body: Mapping[str, Any]) -> dict[str, Any]:
-        ql_data.set_market_dir(self._formulas.market_dir()[0])
         return self._real_refreshed(real.edit_position(position_id, body.get("shares"), body.get("price"),
                                                        body.get("date")))
 
     def real_sell(self, position_id: int, body: Mapping[str, Any]) -> dict[str, Any]:
-        ql_data.set_market_dir(self._formulas.market_dir()[0])
         return self._real_refreshed(real.sell_position(position_id, body.get("price"), body.get("date")))
 
     def real_remove(self, position_id: int) -> dict[str, Any]:
