@@ -743,3 +743,64 @@ def test_board_tables_are_relabelled_to_match_the_real_source(tmp_path):
     again = store.get("ext_hy_ths")
     assert next(f for f in again.fields if f.name == "所属同花顺行业").label == "我的行业"
     assert again.description == "我自己接的行业"
+
+
+# ---------------- 公式函数：DMA、DYNAINFO 的行情项、可变周期的最高最低 ----------------
+
+
+def test_dma_follows_the_recursion_with_a_weight_that_changes_every_bar():
+    from app.custom.tdx_formula.ql.tdx import funcs
+
+    x = np.array([[10.0], [12.0], [11.0], [np.nan], [14.0]])
+    a = np.array([[0.5], [0.25], [np.nan], [0.5], [3.0]])  # 未知的权重沿用上一个值；大于 1 当作 1
+    out = funcs.DMA(x, a)[:, 0]
+    assert out.tolist() == [10.0, 0.25 * 12 + 0.75 * 10, 10.5, 10.5, 14.0]
+    # 权重是固定数字时也能用，并且只用到当天及之前的数据
+    full = funcs.DMA(np.arange(1.0, 9.0).reshape(-1, 1), 0.3)
+    assert np.allclose(funcs.DMA(np.arange(1.0, 6.0).reshape(-1, 1), 0.3), full[:5])
+
+
+def test_dynainfo_prices_become_the_bar_prices_so_they_can_mix_with_technical_conditions():
+    from app.custom.tdx_formula.ql.blocks.split import split_formula
+    from app.custom.tdx_formula.ql.tdx.evaluator import analyze
+    from app.custom.tdx_formula.ql.tdx.parser import parse
+
+    program = parse("A:=DYNAINFO(7)/REF(CLOSE,1)>1.05 AND DMA(C,0.5)>0;\nXG:A AND DYNAINFO(4)>0;")
+    analysis = analyze(program)
+    assert analysis.unsupported == ()
+    assert analysis.pool_functions == ("DYNAINFO",)  # 只剩 DYNAINFO(4)>0，仍按“排除停牌”处理
+
+    result = split_formula(program.source)
+    assert result.universe.exclude_suspended is True
+    assert len(result.conditions) == 1
+    assert "DYNAINFO" not in result.conditions[0].formula
+    assert "CLOSE/REF(CLOSE,1)" in result.conditions[0].formula
+
+
+def test_variable_period_highest_and_lowest_match_a_bar_by_bar_lookback():
+    from app.custom.tdx_formula.ql.tdx import funcs
+
+    rng = np.random.default_rng(7)
+    x = np.round(rng.normal(size=(70, 4)), 1)  # 一位小数，会出现相同的值
+    x[rng.random(x.shape) < 0.03] = np.nan
+    n = rng.integers(-1, 75, size=x.shape).astype(float)
+    n[rng.random(x.shape) < 0.05] = np.nan
+
+    def slow(highest: bool, bars: bool) -> np.ndarray:
+        out = np.full(x.shape, np.nan)
+        for t in range(x.shape[0]):
+            for c in range(x.shape[1]):
+                k = n[t, c]
+                if not np.isfinite(k) or k < 1 or k > t + 1:
+                    continue
+                window = x[t - int(k) + 1: t + 1, c][::-1]  # 从近到远
+                if np.isnan(window).any():
+                    continue
+                pos = int(np.argmax(window) if highest else np.argmin(window))  # 相同时取最近的
+                out[t, c] = pos if bars else window[pos]
+        return out
+
+    assert np.array_equal(funcs.HHV(x, n), slow(True, False), equal_nan=True)
+    assert np.array_equal(funcs.LLV(x, n), slow(False, False), equal_nan=True)
+    assert np.array_equal(funcs.HHVBARS(x, n), slow(True, True), equal_nan=True)
+    assert np.array_equal(funcs.LLVBARS(x, n), slow(False, True), equal_nan=True)

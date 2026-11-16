@@ -25,6 +25,7 @@ FUNCTIONS: dict[str, FuncSpec] = {
     "MA": FuncSpec(f.MA, "sp"),
     "EMA": FuncSpec(f.EMA, "sp"),
     "SMA": FuncSpec(f.SMA, "spp"),
+    "DMA": FuncSpec(f.DMA, "se"),
     "WMA": FuncSpec(f.WMA, "sp"),
     "HHV": FuncSpec(f.HHV, "sp"),
     "LLV": FuncSpec(f.LLV, "sp"),

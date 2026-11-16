@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.custom.tdx_formula.ql.core.errors import FormulaError
 from app.custom.tdx_formula.ql.tdx.ast import (
@@ -261,6 +261,29 @@ def _scan_lookahead(text: str) -> list[str]:
     return sorted(words & LOOKAHEAD_FUNCS)
 
 
+# DYNAINFO 取的是"当天的行情"。按日线回看时，当天的最高、最低、现价就是那一天的最高、最低、收盘，
+# 所以直接换成对应的内置序列，这样它可以和技术条件写在一起。其余编号（如 DYNAINFO(4)>0）仍按股票池条件处理。
+_QUOTE_SERIES = {5: "HIGH", 6: "LOW", 7: "CLOSE"}
+
+
+def _rewrite_expr(expr: Expr) -> Expr:
+    if isinstance(expr, Call):
+        if expr.key == "DYNAINFO" and len(expr.args) == 1 and isinstance(expr.args[0], Number):
+            series = _QUOTE_SERIES.get(int(expr.args[0].value)) if expr.args[0].is_integer else None
+            if series is not None:
+                return Ident(series, expr.line, expr.col)
+        return replace(expr, args=tuple(_rewrite_expr(a) for a in expr.args))
+    if isinstance(expr, Unary):
+        return replace(expr, operand=_rewrite_expr(expr.operand))
+    if isinstance(expr, BinOp):
+        return replace(expr, left=_rewrite_expr(expr.left), right=_rewrite_expr(expr.right))
+    return expr
+
+
+def _rewrite_quotes(program: Program) -> Program:
+    return replace(program, statements=tuple(replace(s, expr=_rewrite_expr(s.expr)) for s in program.statements))
+
+
 def parse(text: str) -> Program:
     """把公式文本解析成语法树。
 
@@ -268,7 +291,7 @@ def parse(text: str) -> Program:
     未来函数的判断优先于其他错误：写法有误的公式里如果出现了未来函数，抛的是 kind="lookahead"。
     """
     try:
-        return _Parser(_tokenize(text)).program(text)
+        return _rewrite_quotes(_Parser(_tokenize(text)).program(text))
     except FormulaError as err:
         names = _scan_lookahead(text)
         if names:

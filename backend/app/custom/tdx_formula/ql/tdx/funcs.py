@@ -118,21 +118,43 @@ def _var_sum(x: Array, n: Period) -> Array:
 
 
 def _var_extreme(x: Array, n: Period, highest: bool, want_bars: bool) -> Array:
-    """可变周期的最高/最低值（或其位置）。逐根回看，回看次数等于最大的周期。"""
+    """可变周期的最高/最低值（或其位置）。
+
+    做法：依次算出“最近 1、2、4、8…根”的极值；周期为 n 的格子，用不超过 n 的最大那一档，
+    取“从当前往前”和“从窗口最早一根往后”两段的较优者，两段合起来正好盖住整个窗口。
+    这样整表运算的次数只和最大周期的对数有关，周期上千也不会慢。
+    窗口里有 NaN 时结果为 NaN；数值相同时取离现在近的那一根。
+    """
     ni, valid = _var_window(x, n)
-    best = x.copy()
-    bars = np.zeros(x.shape, dtype=np.int32)
-    bad = np.isnan(x)
-    kmax = min(int(ni.max()) if ni.size else 1, len(x))
-    for k in range(1, kmax):
-        sh = _shift(x, k, np.nan)
-        active = ni > k
-        bad |= active & np.isnan(sh)
-        take = active & ((sh > best) if highest else (sh < best))
-        best = np.where(take, sh, best)
-        bars = np.where(take, k, bars)
-    out = bars.astype(np.float64) if want_bars else best
-    return np.where(valid & ~bad, out, np.nan)
+    op = np.maximum if highest else np.minimum  # 遇到 NaN 结果就是 NaN
+    flat = x.reshape(len(x), -1)  # 统一按二维处理，最后再变回原来的形状
+    ni2 = np.broadcast_to(ni, x.shape).reshape(flat.shape)
+    out = np.full(flat.shape, np.nan)
+    level = np.frexp(ni2.astype(np.float64))[1] - 1  # 不超过 n 的最大的 2 的幂是 2**level
+    level[~np.broadcast_to(valid, x.shape).reshape(flat.shape)] = -1
+    best = flat
+    bars = np.zeros(flat.shape, dtype=np.int32) if want_bars else None
+    span = 1
+    for k in range(int(level.max()) + 1 if level.size else 0):
+        if k > 0:
+            half = span // 2
+            far = _shift(best, half, np.nan)
+            if bars is not None:
+                take = (far > best) if highest else (far < best)
+                bars = np.where(take, _shift(bars, half, 0) + half, bars)
+            best = op(best, far)
+        r, c = np.nonzero(level == k)  # 只处理周期落在这一档的格子
+        if len(r):
+            back = ni2[r, c] - span  # 第二段的终点在 back 根之前
+            near, far = best[r, c], best[r - back, c]
+            if bars is None:
+                out[r, c] = op(near, far)
+            else:
+                take = (far > near) if highest else (far < near)
+                picked = np.where(take, bars[r - back, c] + back, bars[r, c]).astype(np.float64)
+                out[r, c] = np.where(np.isnan(op(near, far)), np.nan, picked)
+        span *= 2
+    return out.reshape(x.shape)
 
 
 def _window_sums(x: Array, n: int) -> tuple[Array, Array, Array]:
@@ -239,6 +261,26 @@ def SMA(x: Any, n: Period, m: Period) -> Array:
     if not 0 < mv <= n:
         raise FormulaError(f"SMA 的权重必须大于 0 且不大于周期 {n}，现在是 {mv:g}", kind="syntax")
     return _recursive(x, mv, n - mv, float(n))
+
+
+def DMA(x: Any, a: Any) -> Array:
+    """动态移动平均：y[t] = a[t]*x[t] + (1-a[t])*y[t-1]，a 可以每根 K 线都不同。
+
+    a 按通达信的做法限制在 0 到 1 之间（大于 1 当作 1，即直接取当天的值）。
+    a 未知（NaN）的那一根沿用上一个值。从每一列第一个非 NaN 的 x 起算。
+    """
+    x = _f(x)
+    alpha = np.clip(np.broadcast_to(_f(a), x.shape), 0.0, 1.0)
+    out = np.empty_like(x)
+    prev = np.full(x.shape[1:], np.nan)
+    for t in range(len(x)):
+        xt, at = x[t], alpha[t]
+        cur = at * xt + (1.0 - at) * prev
+        cur = np.where(np.isnan(prev), xt, cur)
+        cur = np.where(np.isnan(xt) | np.isnan(at), prev, cur)
+        out[t] = cur
+        prev = cur
+    return out
 
 
 def WMA(x: Any, n: Period) -> Array:
