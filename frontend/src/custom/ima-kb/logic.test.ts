@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { groupByBase, resultSummary, sameSelection, toggleBase } from './logic'
+import { baseNote, groupByBase, resultSummary, sameSelection, toggleBase } from './logic'
 
 const a = { id: 'a', name: '研报' }
 const b = { id: 'b', name: '笔记' }
@@ -21,6 +21,12 @@ describe('ima 知识库', () => {
     const item = (base_id: string, base_name: string, title: string) => ({ base_id, base_name, media_id: title, title, snippet: '' })
     const groups = groupByBase([item('a', '研报', '一'), item('b', '笔记', '二'), item('a', '研报', '三')])
     expect(groups.map(g => [g.base, g.items.map(i => i.title)])).toEqual([['研报', ['一', '三']], ['笔记', ['二']]])
+  })
+
+  it('知识库的类型和篇数', () => {
+    expect(baseNote({ id: 'x', name: 'x', kind: '共享知识库', count: 1839 })).toBe('共享知识库 · 1,839 篇')
+    expect(baseNote({ id: 'x', name: 'x', kind: '个人知识库', count: null })).toBe('个人知识库')
+    expect(baseNote(a)).toBe('')
   })
 
   it('搜索结果的小结', () => {

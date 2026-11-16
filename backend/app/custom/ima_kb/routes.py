@@ -81,13 +81,42 @@ def stock_name(data_dir: Path, symbol: str) -> str | None:
     return cached[1].get(symbol)
 
 
+def stock_industry(data_dir: Path, symbol: str) -> str | None:
+    """股票代码 → 所属行业，读面板的行业表（没有这张表或没有这只股票时返回 None）。"""
+    path = data_dir / "ext_data" / "ext_hy_ths" / "part.parquet"
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return None
+    cached = _names.get(str(path))
+    if cached is None or cached[0] != stamp:
+        try:
+            import polars as pl
+
+            frame = pl.read_parquet(path)
+            column = next(c for c in frame.columns if "行业" in c)
+            table = dict(zip(frame["symbol"].to_list(), frame[column].to_list(), strict=True))
+        except Exception as e:  # noqa: BLE001 —— 读不到行业就只按名称搜
+            logger.info("读取行业表没有成功：%s", e)
+            return None
+        cached = (stamp, {str(k): str(v) for k, v in table.items() if v})
+        _names[str(path)] = cached
+    return cached[1].get(symbol)
+
+
+def stock_terms(data_dir: Path, symbol: str) -> list[str]:
+    """搜一只股票时用哪些词：名称、所属行业。ima 的开放接口基本只按标题匹配，只搜名称多半搜不到，加上行业能多找到一些。"""
+    terms = [stock_name(data_dir, symbol), stock_industry(data_dir, symbol)]
+    return [t for t in terms if t] or [symbol.split(".")[0]]
+
+
 def ai_context(app: Any, prompt: str) -> str:
     """给别的扩展（AI 转接口）用：这段提示词如果是针对某一只股票的，返回知识库里的参考材料，否则返回空。"""
     data_dir = data_dir_of(app)
     if data_dir is None:
         return ""
     try:
-        return service_of(app).context_for(prompt, lambda symbol: stock_name(data_dir, symbol))
+        return service_of(app).context_for(prompt, lambda symbol: stock_terms(data_dir, symbol))
     except Exception as e:  # noqa: BLE001 —— 参考材料拿不到不能影响原来的 AI 调用
         logger.warning("准备知识库参考材料时出错：%s", e)
         return ""
@@ -132,9 +161,9 @@ def build_router() -> APIRouter:
 
     @router.get("/stock/{symbol}")
     def stock(symbol: str, request: Request) -> dict[str, Any]:
-        """个股详情里用：按这只股票的名称（没有名称就按代码）在选中的知识库里搜索。"""
+        """个股详情里用：按这只股票的名称和所属行业（都没有就按代码）在选中的知识库里搜索。"""
         data_dir = data_dir_of(request.app)
-        name = stock_name(data_dir, symbol.upper()) if data_dir else None
-        return run(service_of(request.app).search, name or symbol.split(".")[0])
+        terms = stock_terms(data_dir, symbol.upper()) if data_dir else [symbol.split(".")[0]]
+        return run(service_of(request.app).search_many, terms)
 
     return router

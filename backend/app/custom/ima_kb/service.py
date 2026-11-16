@@ -6,8 +6,9 @@
 - 请求头 ``ima-openapi-clientid`` 和 ``ima-openapi-apikey``（在 https://ima.qq.com/agent-interface 申请）；
 - 文档写的返回是 ``{"retcode": 0, "errmsg": "...", "data": {...}}``，实测是 ``{"code": 0, "msg": "...", "data": {...}}``，
   两种都认；不是 0 时那句话就是给人看的原因；
-- 这里只用到三个只读接口：``search_knowledge_base``（找知识库）、``get_addable_knowledge_base_list``
-  （列出自己能写的知识库）、``search_knowledge``（在一个知识库里搜索，返回标题和命中的片段）。
+- 这里只用到三个只读接口：``search_knowledge_base``（列出或按名称找知识库，自己的和加入的共享知识库都有）、
+  ``get_addable_knowledge_base_list``（只在验证凭证时调一次）、``search_knowledge``（在一个知识库里搜索，
+  返回标题和命中的片段）。
 
 官方接口没有“读取全文”，所以搜到的只有标题和一小段命中的内容。这个扩展不往知识库里写任何东西。
 
@@ -34,6 +35,10 @@ BASE_URL = "https://ima.qq.com/openapi/wiki/v1"
 TIMEOUT_SECONDS = 20.0
 MIN_INTERVAL_SECONDS = 0.5  # 两次请求之间至少隔这么久；官方有频控（错误码 110021）
 MAX_SELECTED = 10
+BASE_PAGE_SIZE = 20  # search_knowledge_base 一页最多 20 个（实测；超过会被拒绝）
+BASE_PAGES = 5
+NETWORK_ATTEMPTS = 2
+RETRY_WAIT_SECONDS = 1.5
 MAX_RESULTS_PER_BASE = 20
 SNIPPET_CHARS = 400
 CONTEXT_ITEMS = 8  # 交给 AI 参考的最多几条
@@ -183,9 +188,14 @@ class ImaService:
             if wait > 0:
                 _sleep(wait)
             try:
-                status, text = _post(f"{BASE_URL}/{name}", headers, body, TIMEOUT_SECONDS)
-            except Exception as e:  # 网络层的任何失败都转成一句话
-                raise ImaError(f"连不上 ima：{type(e).__name__}") from e
+                for attempt in range(NETWORK_ATTEMPTS):  # 连接偶尔会断一下（实测过），断了隔一会儿再试一次
+                    try:
+                        status, text = _post(f"{BASE_URL}/{name}", headers, body, TIMEOUT_SECONDS)
+                        break
+                    except Exception as e:  # 网络层的任何失败都转成一句话
+                        if attempt + 1 >= NETWORK_ATTEMPTS:
+                            raise ImaError(f"连不上 ima：{type(e).__name__}") from e
+                        _sleep(RETRY_WAIT_SECONDS)
             finally:
                 _next_allowed = time.monotonic() + MIN_INTERVAL_SECONDS
         if status in (401, 403):
@@ -208,20 +218,35 @@ class ImaService:
         result = payload.get("data")
         return result if isinstance(result, dict) else {}
 
-    def knowledge_bases(self, query: str = "") -> list[dict[str, str]]:
-        """可以选的知识库。不填名称时列出自己有写入权限的（也就是自己的）；填了名称时按名称搜索
-        （能搜到自己的，也能搜到订阅的、共享给自己的）。各是一次请求。"""
-        found: dict[str, str] = {}
-        if query.strip():
-            data = self._call("search_knowledge_base", {"query": query.strip(), "cursor": "", "limit": 50})
+    def knowledge_bases(self, query: str = "") -> list[dict[str, Any]]:
+        """可以选的知识库：自己的、加入的共享知识库都在里面。不填名称时列出全部，填了按名称找。
+
+        实测 ``search_knowledge_base`` 一页最多 20 个（文档写的是 50），返回的字段是 kb_id / kb_name
+        （文档写的是 id / name），还带知识库的类型和篇数。这里最多翻 5 页。
+        """
+        found: dict[str, dict[str, Any]] = {}
+        cursor = ""
+        for _ in range(BASE_PAGES):
+            data = self._call("search_knowledge_base", {"query": query.strip(), "cursor": cursor, "limit": BASE_PAGE_SIZE})
             rows = data.get("info_list") or []
-        else:
-            data = self._call("get_addable_knowledge_base_list", {"cursor": "", "limit": 50})
-            rows = data.get("addable_knowledge_base_list") or []
-        for item in rows:
-            if isinstance(item, dict) and item.get("id"):
-                found[str(item["id"])] = str(item.get("name") or item["id"])
-        return [{"id": k, "name": v} for k, v in found.items()]
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                ident = str(item.get("kb_id") or item.get("id") or "")
+                if not ident:
+                    continue
+                try:
+                    count: int | None = int(item.get("content_count"))
+                except (TypeError, ValueError):
+                    count = None
+                found[ident] = {
+                    "id": ident, "name": str(item.get("kb_name") or item.get("name") or ident),
+                    "kind": str(item.get("base_type") or ""), "count": count,
+                }
+            cursor = str(data.get("next_cursor") or "")
+            if data.get("is_end") or not rows or not cursor:
+                break
+        return list(found.values())
 
     def search(self, query: str, base_ids: list[str] | None = None) -> dict[str, Any]:
         """在选中的知识库里搜索。一个知识库出错不影响别的，错误单独列出来。"""
@@ -252,12 +277,33 @@ class ImaService:
                 })
         return {"query": query, "items": items, "errors": errors}
 
+    def search_many(self, queries: list[str]) -> dict[str, Any]:
+        """依次按几个词搜索，结果合在一起（同一篇只留第一次搜到的），每条记下是按哪个词搜到的。"""
+        terms = list(dict.fromkeys(q.strip() for q in queries if q and q.strip()))
+        if not terms:
+            raise ImaError("请填要搜索的内容。", 400)
+        items: list[dict[str, str]] = []
+        errors: list[str] = []
+        seen: set[tuple[str, str]] = set()
+        for term in terms:
+            found = self.search(term)
+            errors += [e for e in found["errors"] if e not in errors]
+            for item in found["items"]:
+                key = (item["base_id"], item["media_id"])
+                if key not in seen:
+                    seen.add(key)
+                    items.append({**item, "matched": term})
+        return {"query": "、".join(terms), "items": items, "errors": errors}
+
     # ---------------- 给 AI 的参考材料 ----------------
-    def context_for(self, prompt: str, name_of: Callable[[str], str | None]) -> str:
-        """如果这段提示词是针对某一只股票的，就到知识库里搜这只股票，拼成一段参考材料；否则返回空。
+    def context_for(self, prompt: str, terms_of: Callable[[str], list[str]]) -> str:
+        """如果这段提示词是针对某一只股票的，就到知识库里搜这只股票（名称、所属行业），拼成一段参考材料；否则返回空。
 
         只在提示词里恰好出现一只股票的代码时才搜（复盘这类一次提到很多股票的不搜）。
         搜不到、没配置、接口出错都返回空，不影响原来的 AI 调用。
+
+        实测 ima 的开放接口基本只按标题匹配，多数结果没有正文片段。所以给 AI 的主要是“知识库里有哪些相关资料”
+        的标题清单，并明确告诉它没有看到内容、不能据此下结论。
         """
         config = self.config()
         if not (config["configured"] and config["use_in_ai"] and config["selected"]):
@@ -266,23 +312,29 @@ class ImaService:
         if len(symbols) != 1:
             return ""
         symbol = next(iter(symbols))
-        query = (name_of(symbol) or "").strip() or symbol[:6]
-        cached = self._context_cache.get(query)
+        terms = [t for t in terms_of(symbol) if t] or [symbol[:6]]
+        key = "、".join(terms)
+        cached = self._context_cache.get(key)
         if cached is not None and time.monotonic() - cached[0] < CONTEXT_CACHE_SECONDS:
             items = cached[1]
         else:
             try:
-                items = self.search(query)["items"]
+                items = self.search_many(terms)["items"]
             except ImaError as e:
                 logger.info("给 AI 准备知识库参考材料没有成功：%s", e.message)
                 return ""
-            self._context_cache[query] = (time.monotonic(), items)
-        items = [i for i in items if i["snippet"]][:CONTEXT_ITEMS]
+            self._context_cache[key] = (time.monotonic(), items)
+        items = sorted(items, key=lambda i: not i["snippet"])[:CONTEXT_ITEMS]  # 有片段的排前面
         if not items:
             return ""
-        lines = [f"{n}. 《{i['title']}》（{i['base_name']}）：{i['snippet']}" for n, i in enumerate(items, 1)]
+        lines = []
+        for n, i in enumerate(items, 1):
+            body = f"：{i['snippet']}" if i["snippet"] else "（只有标题，没有内容）"
+            lines.append(f"{n}. 《{i['title']}》（{i['base_name']}，按“{i['matched']}”搜到）{body}")
         return (
-            f"\n\n【我的知识库里和“{query}”相关的内容（来自腾讯 ima，只是搜索命中的片段，可能不完整、也可能已经过时）】\n"
+            f"\n\n【我的知识库（腾讯 ima）里和“{key}”相关的资料】\n"
             + "\n".join(lines)
-            + "\n请把上面的内容当作补充背景：和行情数据有出入时以行情数据为准；用到其中的内容时说明出自知识库。"
+            + "\n说明：上面多数只有标题，你没有看到这些资料的正文，不要根据标题推断里面的结论或数据。"
+              "有正文片段的可以作为补充背景，和行情数据有出入时以行情数据为准，用到时说明出自知识库。"
+              "请在报告最后加一小节“知识库里的相关资料”，把这些标题原样列出来，方便我自己去看。"
         )

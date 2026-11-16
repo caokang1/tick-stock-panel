@@ -23,6 +23,9 @@ def env(tmp_path):
     def post(url, headers, body, timeout):
         name = url.rsplit("/", 1)[1]
         calls.append((name, dict(headers), dict(body)))
+        if state.get("drop"):  # 模拟连接断了一下
+            state["drop"] -= 1
+            raise ConnectionError("reset")
         if state["status"] != 200:
             return state["status"], ""
         if headers.get("ima-openapi-apikey") != GOOD["api_key"]:
@@ -33,7 +36,18 @@ def env(tmp_path):
             data = {"addable_knowledge_base_list": [{"id": "kb1", "name": "研报"}, {"id": "kb2", "name": "笔记"}],
                     "is_end": True}
         elif name == "search_knowledge_base":
-            data = {"info_list": [{"id": "kb9", "name": "订阅的" + body["query"]}], "is_end": True}
+            if not 0 < body["limit"] <= 20:  # 实际接口一页最多 20 个
+                return 200, json.dumps({"code": 51, "msg": "invalid SearchKnowledgeBaseReq.Limit"})
+            if body["query"]:
+                rows = [{"kb_id": "kb9", "kb_name": "共享的" + body["query"], "content_count": "839",
+                         "base_type": "共享知识库"}]
+                data = {"info_list": rows, "is_end": True, "next_cursor": ""}
+            elif body["cursor"] == "":
+                rows = [{"kb_id": "kb1", "kb_name": "研报", "content_count": "12", "base_type": "个人知识库"}]
+                data = {"info_list": rows, "is_end": False, "next_cursor": "c2"}
+            else:
+                rows = [{"kb_id": "kb2", "kb_name": "笔记", "content_count": "x", "base_type": "共享知识库"}]
+                data = {"info_list": rows, "is_end": True, "next_cursor": ""}
         elif name == "search_knowledge":
             if body["knowledge_base_id"] == state["fail_base"]:
                 return 200, json.dumps({"retcode": 110011, "errmsg": "知识库不存在"})
@@ -96,10 +110,12 @@ def test_credentials_are_checked_before_saving_and_never_returned(env):
 def test_listing_and_choosing_knowledge_bases(env):
     client, _, _, _, _ = env
     client.put(f"{PREFIX}/credentials", json=GOOD)
+    # 不填名称：自己的和加入的共享知识库都列出来（这里分两页给，要翻页）
     assert client.get(f"{PREFIX}/knowledge-bases").json()["items"] == [
-        {"id": "kb1", "name": "研报"}, {"id": "kb2", "name": "笔记"}]
+        {"id": "kb1", "name": "研报", "kind": "个人知识库", "count": 12},
+        {"id": "kb2", "name": "笔记", "kind": "共享知识库", "count": None}]
     assert client.get(f"{PREFIX}/knowledge-bases", params={"query": "白酒"}).json()["items"] == [
-        {"id": "kb9", "name": "订阅的白酒"}]
+        {"id": "kb9", "name": "共享的白酒", "kind": "共享知识库", "count": 839}]
     chosen = client.put(f"{PREFIX}/selected", json={"selected": [
         {"id": "kb1", "name": "研报"}, {"id": "kb1", "name": "重复的"}, {"id": "kb9", "name": ""}]}).json()
     assert chosen["selected"] == [{"id": "kb1", "name": "研报"}, {"id": "kb9", "name": "kb9"}]
@@ -149,7 +165,14 @@ def test_stock_lookup_uses_the_stock_name(env):
     pl.DataFrame({"symbol": ["600519.SH"], "name": ["贵州茅台"]}).write_parquet(
         data_dir / "instruments" / "instruments.parquet")
     calls.clear()
-    assert client.get(f"{PREFIX}/stock/600519.sh").json()["query"] == "贵州茅台"
+    (data_dir / "ext_data" / "ext_hy_ths").mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH"], "所属同花顺行业": ["白酒"]}).write_parquet(
+        data_dir / "ext_data" / "ext_hy_ths" / "part.parquet")
+    found = client.get(f"{PREFIX}/stock/600519.sh").json()
+    assert found["query"] == "贵州茅台、白酒"  # 名称和所属行业各搜一遍
+    assert [c[2]["query"] for c in calls] == ["贵州茅台", "贵州茅台", "白酒", "白酒"]  # 两个词 × 两个知识库
+    # 这里造的接口每次都返回同两篇，所以按“白酒”搜到的和前面重复，不再列第二遍
+    assert len(found["items"]) == 4 and {i["matched"] for i in found["items"]} == {"贵州茅台"}
     assert client.get(f"{PREFIX}/stock/000001.SZ").json()["query"] == "000001"  # 清单里没有：按代码搜
 
 
@@ -166,9 +189,10 @@ def test_ai_context_only_for_prompts_about_a_single_stock(env):
     calls.clear()
 
     text = routes.ai_context(app, one)
-    assert "我的知识库里和“贵州茅台”相关的内容" in text and "《贵州茅台深度报告》（研报）" in text
-    assert "只命中标题" not in text  # 没有片段的不给 AI
-    assert "以行情数据为准" in text
+    assert "和“贵州茅台”相关的资料" in text and "《贵州茅台深度报告》（研报，按“贵州茅台”搜到）：贵州茅台 三季度" in text
+    assert "《只命中标题》（研报，按“贵州茅台”搜到）（只有标题，没有内容）" in text  # 只有标题的也列出来，但说明没有内容
+    assert text.index("贵州茅台深度报告") < text.index("只命中标题")  # 有片段的排前面
+    assert "不要根据标题推断" in text and "以行情数据为准" in text
     assert len(calls) == 2
     routes.ai_context(app, one)
     assert len(calls) == 2  # 同一只股票十分钟内不重复搜
@@ -194,6 +218,18 @@ def test_the_real_api_answers_with_code_and_msg(env):
     service.set_transport(post, lambda seconds: None)
     with pytest.raises(service.ImaError, match="没有权限访问该知识库"):
         ImaService(client.app.state.repo.store.data_dir / "x")._call("search_knowledge", {}, "a", "b")
+
+
+def test_a_dropped_connection_is_retried_once(env):
+    client, calls, state, _, _ = env
+    ready(client)
+    calls.clear()
+    state["drop"] = 1
+    assert len(client.post(f"{PREFIX}/search", json={"query": "茅台", "base_ids": ["kb1"]}).json()["items"]) == 2
+    assert len(calls) == 2  # 第一次断了，又试了一次
+    state["drop"] = 2
+    failed = client.post(f"{PREFIX}/search", json={"query": "茅台", "base_ids": ["kb1"]}).json()
+    assert failed["items"] == [] and "连不上 ima" in failed["errors"][0]  # 连着断两次就不再试
 
 
 def test_helpers():

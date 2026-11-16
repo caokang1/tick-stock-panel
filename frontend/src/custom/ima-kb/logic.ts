@@ -25,6 +25,12 @@ export function groupByBase(items: SearchItem[]): { base: string; items: SearchI
   return [...groups.values()]
 }
 
+/** 知识库名称后面的小字：类型和篇数，有什么写什么 */
+export function baseNote(base: KnowledgeBase): string {
+  const parts = [base.kind, base.count != null ? `${base.count.toLocaleString('en-US')} 篇` : ''].filter(Boolean)
+  return parts.join(' · ')
+}
+
 /** 搜索结果的一句话小结 */
 export function resultSummary(query: string, count: number, bases: number): string {
   if (count === 0) return `在选中的 ${bases} 个知识库里没有搜到“${query}”。`

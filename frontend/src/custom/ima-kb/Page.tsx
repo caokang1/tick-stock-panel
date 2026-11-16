@@ -4,7 +4,7 @@ import { Save, Search, Trash2 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { toast } from '@/components/Toast'
 import { imaApi, imaKeys, type ImaConfig, type KnowledgeBase, type SearchResult } from './client'
-import { sameSelection, toggleBase } from './logic'
+import { baseNote, sameSelection, toggleBase } from './logic'
 import { Results } from './Results'
 
 const INPUT = 'h-8 rounded-input border border-border bg-base px-2 text-xs text-foreground'
@@ -149,7 +149,7 @@ function BasesSection({ config }: { config: ImaConfig }) {
     <section className={`${CARD} space-y-2`}>
       <h2 className={H2}>用哪些知识库</h2>
       <form className="flex flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(text.trim()) }}>
-        <input value={text} onChange={e => setText(e.target.value)} placeholder="按名称找知识库（留空列出自己的）"
+        <input value={text} onChange={e => setText(e.target.value)} placeholder="按名称找知识库（留空列出全部）"
           aria-label="知识库名称" maxLength={100} className={`${INPUT} w-72`} />
         <button className={BUTTON}><Search className="h-3.5 w-3.5" />查找</button>
       </form>
@@ -165,6 +165,7 @@ function BasesSection({ config }: { config: ImaConfig }) {
                       <input type="checkbox" checked={checked} disabled={!checked && full}
                         onChange={() => setPicked(toggleBase(chosen, base, config.max_selected))} />
                       {base.name}
+                      {baseNote(base) && <span className="text-[11px] text-muted">{baseNote(base)}</span>}
                     </label>
                   </li>
                 )
@@ -179,7 +180,7 @@ function BasesSection({ config }: { config: ImaConfig }) {
       </div>
       {error && <ErrorNote>{error}</ErrorNote>}
       <p className={NOTE}>
-        留空查找列出的是你自己的知识库；订阅的、别人共享给你的要按名称查找。每搜索一次，选中的每个知识库各发一次请求，所以不要选太多。
+        列表里有你自己的知识库，也有你加入的共享知识库。每搜索一次，选中的每个知识库各发一次请求，所以不要选太多。
       </p>
     </section>
   )
@@ -199,11 +200,12 @@ function AiSection({ config }: { config: ImaConfig }) {
       <h2 className={H2}>AI 分析时参考知识库</h2>
       <label className="flex items-center gap-2 text-xs text-secondary">
         <input type="checkbox" checked={config.use_in_ai} disabled={toggle.isPending} onChange={e => toggle.mutate(e.target.checked)} />
-        AI 分析某一只股票时，先到知识库里搜这只股票，把搜到的片段一起交给 AI
+        AI 分析某一只股票时，先到知识库里搜这只股票，把搜到的资料一起交给 AI
       </label>
       {toggle.error && <ErrorNote>{errorText(toggle.error)}</ErrorNote>}
       <p className={NOTE}>
-        只在分析单只股票时生效（比如个股分析）；复盘这类一次涉及很多股票的不会去搜。最多给 AI 8 条片段。
+        只在分析单只股票时生效（比如个股分析）；复盘这类一次涉及很多股票的不会去搜。按股票名称和所属行业各搜一遍，最多给 AI 8 条。
+        ima 的开放接口基本只按标题匹配、不给正文，所以 AI 拿到的多数只是资料的标题：它会在报告最后列出这些标题方便你去看，但不会知道里面写了什么。
         目前只有 AI 走“本机 claude 命令行”这个转接口时才生效；直接填 DeepSeek 等接口时，面板不经过这里，知识库不会被带上。
         打开后，知识库里搜到的片段会随分析材料一起发给你配置的 AI。
       </p>

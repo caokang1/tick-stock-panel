@@ -6,6 +6,10 @@ const BASE = '/api/custom/ima-kb'
 export interface KnowledgeBase {
   id: string
   name: string
+  /** 个人知识库 / 共享知识库；已经选中的那份记录里没有这一项 */
+  kind?: string
+  /** 里面有多少篇；不知道时是 null */
+  count?: number | null
 }
 
 export interface ImaConfig {
@@ -26,6 +30,8 @@ export interface SearchItem {
   title: string
   /** 命中的片段；只命中标题时是空的 */
   snippet: string
+  /** 一次按几个词搜时，这一条是按哪个词搜到的 */
+  matched?: string
 }
 
 export interface SearchResult {

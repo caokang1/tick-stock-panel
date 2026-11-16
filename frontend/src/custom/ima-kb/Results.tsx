@@ -20,10 +20,13 @@ export function Results({ result, bases }: { result: SearchResult; bases: number
           <ul className="space-y-3">
             {group.items.map(item => (
               <li key={`${item.base_id}:${item.media_id}`} className="border-b border-border/50 pb-3 last:border-0 last:pb-0">
-                <p className="text-sm text-foreground">{item.title}</p>
+                <p className="text-sm text-foreground">
+                  {item.title}
+                  {item.matched && <span className="ml-2 text-[11px] text-muted">按“{item.matched}”搜到</span>}
+                </p>
                 {item.snippet
                   ? <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-secondary">{item.snippet}</p>
-                  : <p className="mt-1 text-[11px] text-muted">只有标题里提到，没有命中的正文片段。</p>}
+                  : null}
               </li>
             ))}
           </ul>
@@ -31,7 +34,7 @@ export function Results({ result, bases }: { result: SearchResult; bases: number
       ))}
       {result.items.length > 0 && (
         <p className="text-[11px] text-muted">
-          这里只有标题和搜索命中的片段（ima 的开放接口不提供全文）。要看全文，请到 ima 里按标题打开。
+          ima 的开放接口基本只按标题匹配，也不提供全文，所以这里多数只有标题。要看内容，请到 ima 里按标题打开。
         </p>
       )}
     </div>

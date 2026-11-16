@@ -9,12 +9,13 @@
 
 1. 到 <https://ima.qq.com/agent-interface> 申请 Client ID 和 API Key（API Key 只显示一次）。
 2. 打开面板的“知识库”页，填凭证并点“验证并保存”。
-3. 勾选要用的知识库（留空查找列出自己的；订阅的、别人共享的按名称查找），最多 10 个。
+3. 勾选要用的知识库（自己的和加入的共享知识库都会列出来），最多 10 个。
 
 ## 用之前要知道的
 
-- **只有标题和命中的片段**：ima 的开放接口没有“读取全文”，搜到的是标题加一小段命中的内容。
-  所以 AI 参考到的也只是片段，不是整篇文档。
+- **基本只有标题**：ima 的开放接口没有“读取全文”，而且实测搜索基本只按标题匹配，多数结果不带正文片段。
+  所以搜一只股票时会按“股票名称”和“所属行业”各搜一遍（只搜名称多半搜不到）；
+  AI 拿到的主要是相关资料的标题清单，会在报告最后列出来方便自己去看，但不会知道资料里写了什么。
 - **AI 参考只在走“本机 claude 命令行”转接口时生效**：面板没有给扩展留修改 AI 提示词的入口，
   这个功能是挂在 `claude_bridge` 扩展上的。AI 直接填 DeepSeek 等接口时，知识库不会被带上。
 - **只在分析单只股票时去搜**：提示词里恰好出现一只股票的代码才搜；复盘这类一次提到很多股票的不搜。
@@ -36,4 +37,7 @@
 
 来自 ima 官方技能包（ima-skills 1.1.2）里的 `knowledge-base/references/api.md`：
 地址 `https://ima.qq.com/openapi/wiki/v1/<接口名>`，POST + JSON，
-请求头 `ima-openapi-clientid` 和 `ima-openapi-apikey`，返回 `{"retcode", "errmsg", "data"}`。
+请求头 `ima-openapi-clientid` 和 `ima-openapi-apikey`。
+
+实测和文档不一致的地方（代码按实测写，同时兼容文档的写法）：返回的是 `{"code", "msg", "data"}` 而不是
+`retcode` / `errmsg`；`search_knowledge_base` 一页最多 20 个而不是 50，字段是 `kb_id` / `kb_name` 而不是 `id` / `name`。
