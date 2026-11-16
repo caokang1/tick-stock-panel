@@ -45,7 +45,7 @@ class AkshareEmSource:
 
     def _stock_daily(self, timeout: float, code: str, start: date, end: date) -> pd.DataFrame:
         raw = call_akshare(
-            "东方财富个股日线", ak.stock_zh_a_hist, timeout,
+            self.name, "东方财富个股日线", ak.stock_zh_a_hist, timeout,
             symbol=codes.digits(code), period="daily", start_date=compact(start), end_date=compact(end), adjust="",
         )
         return pd.DataFrame({
@@ -58,7 +58,7 @@ class AkshareEmSource:
 
     def _index_daily(self, timeout: float, code: str, start: date, end: date) -> pd.DataFrame:
         raw = call_akshare(
-            "东方财富指数日线", ak.stock_zh_index_daily_em, timeout,
+            self.name, "东方财富指数日线", ak.stock_zh_index_daily_em, timeout,
             symbol=prefixed_symbol(code), start_date=compact(start), end_date=compact(end),
         )
         return pd.DataFrame({
@@ -72,7 +72,7 @@ class AkshareEmSource:
         now = clock.now()
         if day != now.date() or now.hour < _CLOSE_HOUR:
             raise SourceUnavailable("东方财富的全市场行情只能在当天收盘后取当天的数据")
-        raw = call_akshare("东方财富全市场行情", ak.stock_zh_a_spot_em, timeout)
+        raw = call_akshare(self.name, "东方财富全市场行情", ak.stock_zh_a_spot_em, timeout)
         norm: list[str | None] = []
         for c in raw["代码"].astype(str):
             try:

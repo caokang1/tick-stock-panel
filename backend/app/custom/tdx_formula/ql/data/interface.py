@@ -84,6 +84,15 @@ class SourceHalted(SourceBlocked):
     code = "source_halted"
 
 
+class SourceNoData(SourceUnavailable):
+    """来源有回应，但给不出这一项数据（例如它没有这只股票）。再问一遍结果也一样，所以不重试，直接换下一个来源。
+
+    仍然计入连续失败：来源改了接口或者返回的是拦截页面时，表现也是这样，连续多次就该停下来。
+    """
+
+    code = "source_no_data"
+
+
 class NoSourceAvailable(SourceUnavailable):
     """某项能力的所有来源都没能给出数据。
 

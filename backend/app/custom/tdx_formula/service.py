@@ -78,11 +78,12 @@ class FormulaService:
         progress = ql_store.Progress.load()
         codes = ql_store.list_daily_codes()
         latest = ql_store.latest_date()
+        first = ql_store.first_date()
         shares_done = progress.count_done(ql_store.ITEM_SHARES, codes)
         st_done = progress.count_done(ql_store.ITEM_ST, codes)
         return {
             "has_data": bool(codes) and latest is not None, "data_dir": str(self._data_dir),
-            "first_date": progress.start, "latest_date": latest.isoformat() if latest else None,
+            "first_date": first.isoformat() if first else progress.start, "latest_date": latest.isoformat() if latest else None,
             "stock_count": len(codes), "download_finished": progress.finished,
             "st_known": bool(codes) and st_done == len(codes),
             "float_shares_ready": bool(codes) and shares_done == len(codes),

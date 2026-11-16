@@ -45,7 +45,7 @@ class AkshareSinaSource:
 
     def _stock_daily(self, timeout: float, code: str, start: date, end: date) -> pd.DataFrame:
         raw = call_akshare(
-            "新浪个股日线", ak.stock_zh_a_daily, timeout,
+            self.name, "新浪个股日线", ak.stock_zh_a_daily, timeout,
             symbol=prefixed_symbol(code), start_date=compact(start), end_date=compact(end), adjust="",
         )
         out = pd.DataFrame({
@@ -67,7 +67,7 @@ class AkshareSinaSource:
     def _adjust_factor(self, timeout: float, code: str, start: date, end: date) -> pd.DataFrame:
         """新浪给的是每次除权除息日起生效的后复权因子；这里展开成逐日（工作日）的因子。"""
         raw = call_akshare(
-            "新浪复权因子", ak.stock_zh_a_daily, timeout, symbol=prefixed_symbol(code), adjust="hfq-factor",
+            self.name, "新浪复权因子", ak.stock_zh_a_daily, timeout, symbol=prefixed_symbol(code), adjust="hfq-factor",
         )
         events = pd.DataFrame({
             "date": pd.to_datetime(raw["date"], errors="coerce").astype("datetime64[s]"),
@@ -81,7 +81,7 @@ class AkshareSinaSource:
         return pd.DataFrame({"date": days, "code": code, "factor": factor})
 
     def _index_daily(self, timeout: float, code: str, start: date, end: date) -> pd.DataFrame:
-        raw = call_akshare("新浪指数日线", ak.stock_zh_index_daily, timeout, symbol=prefixed_symbol(code))
+        raw = call_akshare(self.name, "新浪指数日线", ak.stock_zh_index_daily, timeout, symbol=prefixed_symbol(code))
         raw = in_range(raw, start, end)
         return pd.DataFrame({
             "date": raw["date"], "code": code,
@@ -90,5 +90,5 @@ class AkshareSinaSource:
         })
 
     def _trade_calendar(self, timeout: float, start: date, end: date) -> pd.DataFrame:
-        raw = call_akshare("新浪交易日历", ak.tool_trade_date_hist_sina, timeout)
+        raw = call_akshare(self.name, "新浪交易日历", ak.tool_trade_date_hist_sina, timeout)
         return pd.DataFrame({"date": in_range(raw, start, end, "trade_date")["trade_date"]})

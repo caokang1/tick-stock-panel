@@ -22,6 +22,7 @@ from app.custom.tdx_formula.ql.data.interface import (
     SourceCooling,
     SourceDisabled,
     SourceHalted,
+    SourceNoData,
 )
 from app.custom.tdx_formula.ql.data.state import StateStore
 
@@ -88,7 +89,8 @@ class RateLimiter:
         这次请求同样计数，并且与随后的 ``fn`` 之间也隔开最小间隔。
 
         检查停用、冷却、每日上限 → 等到满足最小间隔 → 执行 → 计数。
-        失败按 max_retries 重试（每次都计数，间隔逐次加长）；``SourceRejected`` 不重试，
+        失败按 max_retries 重试（每次都计数，间隔逐次加长）；``SourceNoData``（来源明确给不出这项数据）
+        不重试，但仍计入连续失败；``SourceRejected`` 不重试，
         写入冷却截止时间后向上抛；连续失败达到阈值后抛 ``SourceHalted`` 并在本次任务内停用该来源。
         """
         policy = self._policy_of(source_name)
@@ -125,7 +127,7 @@ class RateLimiter:
                             f"数据来源 {source_name} 连续失败 {failures} 次，本次任务已停止使用它。"
                             f"最后一次的原因：{error.message}"
                         ) from e
-                    if attempt >= policy.max_retries:
+                    if attempt >= policy.max_retries or isinstance(error, SourceNoData):
                         raise error from e
                     attempt += 1
                     logger.warning("数据来源 %s 请求失败，第 %d 次重试：%s", source_name, attempt, error.message)

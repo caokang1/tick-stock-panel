@@ -41,7 +41,7 @@ def data_status() -> DataStatus:
     last = rt.state.last_update()
     return DataStatus(
         has_data=bool(codes) and store.latest_date() is not None,
-        first_date=date.fromisoformat(progress.start) if progress.start else None,
+        first_date=store.first_date() or (date.fromisoformat(progress.start) if progress.start else None),
         latest_date=store.latest_date(),
         stock_count=len(codes),
         securities_count=int((securities["kind"] == KIND_STOCK).sum()) if len(securities) else 0,

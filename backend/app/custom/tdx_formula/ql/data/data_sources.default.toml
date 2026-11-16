@@ -50,7 +50,7 @@ timeout_seconds = 30
 max_retries = 2
 stop_after_consecutive_failures = 5
 cooldown_minutes_on_reject = 10
-count_pages_as_requests = false
+count_pages_as_requests = true        # 取一只股票的日线，内部按年份分段发好几次请求，都算
 
 # 每种能力的来源优先级：排在前面的失败、被限制或正在冷却时，自动换下一个。
 # 腾讯的实时行情接口（盘中快照和买卖五档）。一次请求最多查 800 只，全市场一轮约 7 次请求。

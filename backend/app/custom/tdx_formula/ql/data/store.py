@@ -166,7 +166,7 @@ def _write_daily(code: str, df: pd.DataFrame) -> None:
     _atomic_write_table(pa.table(arrays, schema=_DAILY_SCHEMA), daily_path(code))
     bars = df.loc[df["close"].notna(), "date"]
     if len(bars):
-        _note_latest(bars.max().date())
+        _note_range(bars.min().date(), bars.max().date())
 
 
 def _off_calendar(days: pd.Index) -> np.ndarray:
@@ -265,11 +265,14 @@ def update_meta(**changes: Any) -> None:
         _atomic_write_text(json.dumps(meta, ensure_ascii=False, indent=1), _meta_path())
 
 
-def _note_latest(day: date) -> None:
+def _note_range(first: date, last: date) -> None:
+    """记下本地行情最早和最新的一根日线是哪天（只往两头扩，不往里收）。"""
     meta = read_meta()
     changes: dict[str, str] = {}
-    if not meta.get("latest_date") or meta["latest_date"] < day.isoformat():
-        changes["latest_date"] = day.isoformat()
+    if not meta.get("latest_date") or meta["latest_date"] < last.isoformat():
+        changes["latest_date"] = last.isoformat()
+    if meta.get("first_date") and meta["first_date"] > first.isoformat():
+        changes["first_date"] = first.isoformat()
     if changes:
         update_meta(**changes)
 
@@ -278,6 +281,23 @@ def latest_date() -> date | None:
     """本地行情的最新日期。"""
     value = read_meta().get("latest_date")
     return date.fromisoformat(value) if value else None
+
+
+def first_date() -> date | None:
+    """本地行情里最早的一根日线是哪天。
+
+    在第一次把全市场数据拼出来时记下（之后写入更早的数据会跟着往前挪）；还没拼过时返回 None。
+    """
+    value = read_meta().get("first_date")
+    return date.fromisoformat(value) if value else None
+
+
+def complete_through() -> date | None:
+    """这一天及之前，库里所有股票的数据都是齐的。
+
+    做过每日更新的，取更新到的那一天；还没做过的，取各只股票历史下载截止日里最早的一个。都没有记录时返回 None。
+    """
+    return updated_through() or Progress.load().history_end()
 
 
 def updated_through() -> date | None:
@@ -369,7 +389,7 @@ def _fingerprint() -> str | None:
                 size += st.st_size
     if count == 0:
         return None
-    parts = [str(count), str(newest), str(size)]
+    parts = [str(count), str(newest), str(size), str(complete_through())]
     for name in ("calendar.parquet", "securities.parquet", "industry.parquet"):
         p = s.market_dir / name
         parts.append(str(p.stat().st_mtime_ns) if p.exists() else "-")
@@ -400,6 +420,10 @@ def build_panel(start: date | None = None, end: date | None = None) -> Panel:
                 _remove_disk_cache()
             _panel_memory.clear()
             _panel_memory[key] = panel
+            if len(panel.dates):
+                earliest = str(panel.dates[0])
+                if read_meta().get("first_date") != earliest:
+                    update_meta(first_date=earliest)
     if start is None and end is None:
         return panel
     return panel.slice_dates(start, end)
@@ -536,6 +560,12 @@ def _assemble_panel() -> Panel:
     if not bar_rows.any():
         raise DataError("本地还没有行情数据，请先下载历史数据")
     first, last = row_dates[bar_rows].min(), row_dates[bar_rows].max()
+    # 各只股票不是同一天下载的：晚下载的会多出几天。多出来的那几天里，早下载的股票没有行情不是因为停牌，
+    # 而是还没取。所以只拼到"所有股票的数据都齐"的那一天，免得把没取到的当成停牌。
+    complete = complete_through()
+    if complete is not None and first <= np.datetime64(complete, "D") < last:
+        logger.info("行情只拼到 %s：之后的日期还有股票没有更新到", complete)
+        last = np.datetime64(complete, "D")
 
     calendar = read_calendar()
     calendar = calendar[(calendar >= first) & (calendar <= last)]

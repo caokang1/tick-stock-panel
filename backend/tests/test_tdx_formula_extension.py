@@ -804,3 +804,130 @@ def test_variable_period_highest_and_lowest_match_a_bar_by_bar_lookback():
     assert np.array_equal(funcs.LLV(x, n), slow(False, False), equal_nan=True)
     assert np.array_equal(funcs.HHVBARS(x, n), slow(True, True), equal_nan=True)
     assert np.array_equal(funcs.LLVBARS(x, n), slow(False, True), equal_nan=True)
+
+
+# ---------------- 数据层的几处修正 ----------------
+def test_first_date_is_the_first_bar_not_the_requested_start(env):
+    client, root = env
+    market = make_market(root)
+    progress = json.loads((market / "progress.json").read_text(encoding="utf-8"))
+    progress["start"] = "2015-01-01"  # 要求从 2015 年下起，但实际最早的行情是 2024-01-02
+    (market / "progress.json").write_text(json.dumps(progress), encoding="utf-8")
+    assert client.get(f"{PREFIX}/status").json()["first_date"] == "2015-01-01"  # 还没读过行情，只知道要求的起点
+    r = client.post(f"{PREFIX}/stats", json={"conditions": [ABOVE_MA], "universe": ALL})
+    assert r.status_code == 200, r.text
+    assert client.get(f"{PREFIX}/status").json()["first_date"] == str(DAYS[0].date())
+
+    from app.custom.tdx_formula.ql.data import service as ql_service
+
+    assert ql_service.data_status().first_date == DAYS[0].date()
+
+
+def test_days_not_yet_fetched_for_every_stock_are_left_out_instead_of_shown_as_suspended(env):
+    client, root = env
+    market = make_market(root)
+    client.get(f"{PREFIX}/status")  # 让扩展指到这个数据目录
+    next_day = (DAYS[-1] + pd.offsets.BDay(1)).normalize()
+    ql_store.write_calendar(pd.Series([next_day]))
+    # 只有一只股票多了一天（比如它是第二天才下载的），另外两只还停在前一天
+    ql_store.merge_daily("sh.600001", pd.DataFrame({
+        "date": [next_day], "open": [18.0], "high": [18.1], "low": [17.9], "close": [18.0], "preclose": [17.9],
+        "volume": [2e6], "amount": [3.6e7], "factor": [1.0], "float_shares": [1e8], "is_st": [False],
+        "source": ["fake"],
+    }))
+    meta = json.loads((market / "meta.json").read_text(encoding="utf-8"))
+    assert meta["latest_date"] == str(next_day.date()) and meta["updated_through"] == str(DAYS[-1].date())
+    panel = ql_store.build_panel()
+    assert str(panel.dates[-1]) == str(DAYS[-1].date()) and not panel.suspended[-1].any()
+
+    # 每日更新做到这一天之后，这一天才进来；这时没有行情的才是真的停牌
+    set_latest(market, str(next_day.date()))
+    panel = ql_store.build_panel()
+    assert str(panel.dates[-1]) == str(next_day.date())
+    assert list(panel.suspended[-1]) == [False, True, True]
+
+
+def test_no_data_answers_are_not_retried_but_network_failures_are(tmp_path):
+    from app.custom.tdx_formula.ql.core import config as ql_config
+    from app.custom.tdx_formula.ql.core.errors import SourceUnavailable
+    from app.custom.tdx_formula.ql.data.interface import SourceNoData
+    from app.custom.tdx_formula.ql.data.limiter import RateLimiter, SourcePolicy
+    from app.custom.tdx_formula.ql.data.state import StateStore
+
+    ql_config.set_data_dir(tmp_path / "freecn")
+    policy = SourcePolicy(
+        enabled=True, max_concurrent=1, daily_request_cap=0, min_interval_seconds=0.01, jitter_seconds=0.0,
+        timeout_seconds=5.0, max_retries=2, stop_after_consecutive_failures=5, cooldown_minutes_on_reject=10,
+        count_pages_as_requests=False, official_daily_limit=None, official_max_concurrent=None,
+    )
+    limiter = RateLimiter(lambda name: policy, StateStore(), sleep=lambda seconds: None)
+    calls: list[str] = []
+
+    def fail_with(error: Exception):
+        def fn():
+            calls.append(type(error).__name__)
+            raise error
+        return fn
+
+    with pytest.raises(SourceNoData):
+        limiter.call("s", fail_with(SourceNoData("没有这只股票")))
+    assert calls == ["SourceNoData"] and limiter.today_requests("s") == 1  # 只问了一次
+    assert limiter.consecutive_failures("s") == 1  # 仍然计入连续失败
+    calls.clear()
+    limiter.begin_task()
+    with pytest.raises(SourceUnavailable):
+        limiter.call("s", fail_with(SourceUnavailable("超时")))
+    assert len(calls) == 3  # 网络类的失败照旧重试 2 次
+
+
+def test_akshare_errors_are_sorted_and_a_timed_out_call_blocks_the_next_one():
+    pytest.importorskip("akshare")
+    import threading
+
+    import requests
+
+    from app.custom.tdx_formula.ql.core.errors import SourceRejected, SourceUnavailable
+    from app.custom.tdx_formula.ql.data.interface import SourceNoData
+    from app.custom.tdx_formula.ql.data.sources import akshare_common as common
+    from app.custom.tdx_formula.ql.data.sources.akshare_tx import requests_for
+
+    assert isinstance(common.translate_error("x", KeyError("date")), SourceNoData)
+    assert isinstance(common.translate_error("x", ValueError("factor not available")), SourceNoData)
+    timeout = common.translate_error("x", requests.ConnectionError("断了"))
+    assert isinstance(timeout, SourceUnavailable) and not isinstance(timeout, SourceNoData)
+    bad_json = common.translate_error("x", requests.exceptions.JSONDecodeError("不是 JSON", "<html>", 0))
+    assert not isinstance(bad_json, SourceNoData)  # 返回的不是数据（可能是拦截页面）：按来源不可用处理
+    response = requests.Response()
+    response.status_code = 456
+    assert isinstance(common.translate_error("x", requests.HTTPError(response=response)), SourceRejected)
+
+    # 上一次调用超时后还没返回：同一个来源不再发新的请求，别的来源不受影响
+    release = threading.Event()
+    started: list[str] = []
+
+    def hang() -> pd.DataFrame:
+        started.append("hang")
+        release.wait(5)
+        return pd.DataFrame()
+
+    def quick() -> pd.DataFrame:
+        started.append("quick")
+        return pd.DataFrame({"a": [1]})
+
+    try:
+        with pytest.raises(SourceUnavailable, match="没有返回"):
+            common.call_akshare("src_a", "测试", hang, 0.05)
+        with pytest.raises(SourceUnavailable, match="还没有结束"):
+            common.call_akshare("src_a", "测试", quick, 1.0)
+        assert started == ["hang"]
+        assert len(common.call_akshare("src_b", "测试", quick, 1.0)) == 1
+    finally:
+        release.set()
+        common._in_flight["src_a"].join(5)
+    assert len(common.call_akshare("src_a", "测试", quick, 1.0)) == 1  # 结束之后恢复正常
+
+    # 腾讯日线：AKShare 内部按年份分段发请求，按实际次数计
+    from datetime import date
+
+    assert requests_for(date(2015, 1, 1), date(2024, 12, 31)) == 5  # 2015–2024，两年一段
+    assert requests_for(date(2024, 3, 1), date(2024, 3, 29)) == 1
