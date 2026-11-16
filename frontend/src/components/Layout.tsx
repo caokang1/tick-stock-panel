@@ -538,6 +538,14 @@ export function Layout() {
   const realtimeEnabled = prefs?.realtime_quotes_enabled ?? false
   // 自选实时模式限制提示: 可手动关闭, 不持久化 (刷新后恢复显示)
   const [dismissFreeHint, setDismissFreeHint] = useState(false)
+  // 侧栏底部的实时行情区 (开关 + 指数行情) 可以收成一行, 记在浏览器里
+  const [quoteBoardHidden, setQuoteBoardHidden] = useState(() => {
+    try { return localStorage.getItem('tf-sidebar-quotes-hidden') === '1' } catch { return false }
+  })
+  const toggleQuoteBoard = (hidden: boolean) => {
+    setQuoteBoardHidden(hidden)
+    try { localStorage.setItem('tf-sidebar-quotes-hidden', hidden ? '1' : '0') } catch { /* 存不了就只在本次生效 */ }
+  }
   // 开启实时行情时若存在排队中的挖掘任务 → 确认弹窗 (实时落盘会让排队任务开跑即失败)
   const [miningQueuedWarning, setMiningQueuedWarning] = useState<number | null>(null)
   const miningWarnBackdrop = useDialogBackdrop(() => setMiningQueuedWarning(null))
@@ -984,6 +992,19 @@ export function Layout() {
               <span className={`inline-block h-2 w-2 rounded-full ${realtimeIndicatorClass}`} />
             </button>
           </div>
+        ) : quoteBoardHidden ? (
+          /* 收起后只留一行: 状态点 + 名称, 点一下展开 */
+          <button
+            type="button"
+            onClick={() => toggleQuoteBoard(false)}
+            aria-expanded={false}
+            title="展开实时行情"
+            className="flex w-full shrink-0 cursor-pointer items-center gap-2 border-t border-border px-3 py-1.5 text-left transition-colors hover:bg-elevated/60"
+          >
+            <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${realtimeIndicatorClass}`} />
+            <span className="min-w-0 flex-1 truncate text-[11px] text-muted">实时行情</span>
+            <ChevronRight className="h-3.5 w-3.5 -rotate-90 text-muted" />
+          </button>
         ) : (
         <div className="border-t border-border px-3 py-2.5 shrink-0">
           {realtimeUnavailable && !realtimeProviderName ? (
@@ -1020,6 +1041,16 @@ export function Layout() {
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => toggleQuoteBoard(true)}
+                  aria-expanded
+                  aria-label="收起实时行情"
+                  title="收起实时行情"
+                  className="flex h-7 w-7 items-center justify-center rounded-btn text-muted transition-colors hover:bg-elevated hover:text-foreground"
+                >
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </button>
                 <button
                   onClick={() => navigate('/settings?tab=monitoring&highlight=quotes')}
                   aria-label="打开实时监控设置"
