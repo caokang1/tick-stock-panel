@@ -499,6 +499,7 @@ def test_tsp_is_asked_to_sync_only_when_it_is_behind(env, tmp_path, monkeypatch)
     from datetime import timedelta as _timedelta
 
     from app.custom.tdx_formula import tsp_sync
+    from app.custom.tdx_formula.ql.live import store as live_store
 
     client, _ = env
     client.get(f"{PREFIX}/data/schedule")  # 让扩展把自己的设置库建好
@@ -522,7 +523,11 @@ def test_tsp_is_asked_to_sync_only_when_it_is_behind(env, tmp_path, monkeypatch)
     assert sync.due(data_dir, latest, now) is False  # 开关关着
     sync.set_enabled(True)
     (data_dir / "kline_daily" / "date=2024-03-14").mkdir()
-    assert sync.due(data_dir, latest, now) is False  # TSP 已经是最新
+    # 日期上已经是最新，但那可能只是收盘时的行情快照：这一天的正式行情还没同步过，仍然要同步一次
+    assert sync.due(data_dir, latest, now) is True
+    live_store.set_setting(tsp_sync.KEY_SYNCED, "2024-03-14")
+    assert sync.synced_through() == latest and sync.due(data_dir, latest, now) is False  # 同步过就不再重复
+    assert sync.due(data_dir, _date(2024, 3, 15), now) is True  # 下一个交易日的行情到了，再同步
 
     # 试过以后半小时内不再试；同一天最多试 3 次
     (data_dir / "kline_daily" / "date=2024-03-14").rmdir()
@@ -567,6 +572,7 @@ def test_trigger_runs_the_tsp_pipeline_on_the_app_event_loop(env, monkeypatch):
         sync.trigger(fake_app, loop, latest, now)
         assert seen == [("repo", "caps", None, "app-loop")]
         assert "已让 TSP 开始同步" in sync.info()["tsp_sync_message"] and sync._attempts == {latest: 1}
+        assert sync.synced_through() == latest  # 记下已经为这一天同步过
         outcome["value"] = {"job_id": "j1", "reused": True}
         sync.trigger(fake_app, loop, latest, now)
         assert "没有另开" in sync.info()["tsp_sync_message"] and sync._attempts == {latest: 2}
@@ -931,3 +937,32 @@ def test_akshare_errors_are_sorted_and_a_timed_out_call_blocks_the_next_one():
 
     assert requests_for(date(2015, 1, 1), date(2024, 12, 31)) == 5  # 2015–2024，两年一段
     assert requests_for(date(2024, 3, 1), date(2024, 3, 29)) == 1
+
+
+def test_data_ready_time_can_be_set_to_the_minute(monkeypatch):
+    """数据入库时间可以精确到分钟（如 17:30）：到点之前只处理到前一天，最早的自动更新时间也跟着它走。"""
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+
+    from app.custom.tdx_formula.data_service import DataService
+    from app.custom.tdx_formula.ql.core import clock
+    from app.custom.tdx_formula.ql.data import config as data_config
+    from app.custom.tdx_formula.ql.data import download
+
+    raw = data_config.load_default_raw()
+    assert data_config.parse(raw).download.data_ready_minute == 0
+    raw["download"].update(data_ready_hour=17, data_ready_minute=30)
+    config = data_config.parse(raw)
+    monkeypatch.setattr(clock, "now", lambda: _datetime(2024, 3, 14, 17, 29))
+    assert download.effective_end(config) == _date(2024, 3, 13)
+    monkeypatch.setattr(clock, "now", lambda: _datetime(2024, 3, 14, 17, 30))
+    assert download.effective_end(config) == _date(2024, 3, 14)
+
+    from app.custom.tdx_formula.ql import data as ql_data
+
+    monkeypatch.setattr(ql_data, "get_effective_config", lambda: config)
+    assert DataService.earliest_run_time().strftime("%H:%M") == "17:30"
+
+    raw["download"]["data_ready_minute"] = 60
+    with pytest.raises(data_config.ConfigError):
+        data_config.parse(raw)

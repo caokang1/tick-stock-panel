@@ -53,6 +53,7 @@ class DownloadOptions:
     indices: tuple[str, ...]
     max_catchup_days: int
     data_ready_hour: int  # 每天几点（北京时间）之后，当天的日线才算已经入库
+    data_ready_minute: int = 0  # 上面那个钟点的几分；默认整点
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class DataConfig:
                 "indices": list(self.download.indices),
                 "max_catchup_days": self.download.max_catchup_days,
                 "data_ready_hour": self.download.data_ready_hour,
+                "data_ready_minute": self.download.data_ready_minute,
             },
             "storage": {"panel_cache": self.panel_cache},
             "realtime": {"snapshot_interval_seconds": self.realtime_interval},
@@ -193,7 +195,7 @@ def _parse_policy(name: str, items: Any) -> SourcePolicy:
 def _parse_download(raw: Any) -> DownloadOptions:
     if not isinstance(raw, dict):
         raise ConfigError("下载设置（download）的格式不对")
-    unknown = set(raw) - {"default_start", "indices", "max_catchup_days", "data_ready_hour"}
+    unknown = set(raw) - {"default_start", "indices", "max_catchup_days", "data_ready_hour", "data_ready_minute"}
     if unknown:
         raise ConfigError(f"下载设置里有不认识的配置项：{', '.join(sorted(unknown))}")
     try:
@@ -213,8 +215,12 @@ def _parse_download(raw: Any) -> DownloadOptions:
         raise ConfigError(f"下载设置里的最多补几个交易日（max_catchup_days）必须是正整数，当前值：{catchup!r}")
     if isinstance(ready_hour, bool) or not isinstance(ready_hour, int) or not 0 <= ready_hour <= 23:
         raise ConfigError(f"下载设置里的数据入库时间（data_ready_hour）必须是 0 到 23 的整数，当前值：{ready_hour!r}")
+    ready_minute = raw.get("data_ready_minute", 0)
+    if isinstance(ready_minute, bool) or not isinstance(ready_minute, int) or not 0 <= ready_minute <= 59:
+        raise ConfigError(f"下载设置里的数据入库时间的分钟（data_ready_minute）必须是 0 到 59 的整数，当前值：{ready_minute!r}")
     return DownloadOptions(
-        default_start=start, indices=tuple(indices), max_catchup_days=catchup, data_ready_hour=ready_hour
+        default_start=start, indices=tuple(indices), max_catchup_days=catchup, data_ready_hour=ready_hour,
+        data_ready_minute=ready_minute,
     )
 
 

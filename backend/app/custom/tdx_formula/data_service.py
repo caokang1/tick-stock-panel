@@ -195,7 +195,8 @@ class DataService:
     @staticmethod
     def earliest_run_time() -> time:
         """最早可以设到几点：数据来源要到这个钟点之后才有当天完整的行情（收盘是 15:00，入库更晚）。"""
-        return time(int(ql_data.get_effective_config().download.data_ready_hour), 0)
+        options = ql_data.get_effective_config().download
+        return time(int(options.data_ready_hour), int(options.data_ready_minute))
 
     def parse_run_time(self, text: str) -> time:
         try:

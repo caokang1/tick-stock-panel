@@ -44,7 +44,8 @@ _BAR_VALUE_COLUMNS = ("open", "high", "low", "close", "preclose", "volume", "amo
 def effective_end(config: DataConfig) -> date:
     """最近一个"数据已经齐了"的自然日：过了配置的入库时间取今天，否则取昨天。"""
     now = clock.now()
-    return now.date() if now.hour >= config.download.data_ready_hour else now.date() - timedelta(days=1)
+    ready = (config.download.data_ready_hour, config.download.data_ready_minute)
+    return now.date() if (now.hour, now.minute) >= ready else now.date() - timedelta(days=1)
 
 
 # ======================= 历史下载 =======================
