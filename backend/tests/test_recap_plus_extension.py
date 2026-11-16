@@ -62,6 +62,17 @@ def env(tmp_path, monkeypatch):
 
     def fetch(url: str, params: dict[str, str], timeout: float) -> tuple[int, str]:
         calls.append({"url": url, **params})
+        if "anotice" in url:
+            if state.get("fail_notices"):
+                return 500, ""
+            return 200, json.dumps({"data": {"list": [
+                {"art_code": "AN1", "title": "沪一:关于回购股份的公告", "display_time": "2024-03-14 18:30:11:000",
+                 "notice_date": "2024-03-15 00:00:00", "columns": [{"column_name": "回购"}],
+                 "codes": [{"stock_code": "600001", "short_name": "沪一"}, {"stock_code": "999999", "short_name": "别人"}]},
+                {"art_code": "AN0", "title": "深二:年度报告", "display_time": "2024-03-01 17:00:00:000",
+                 "notice_date": "2024-03-02 00:00:00", "columns": [],
+                 "codes": [{"stock_code": "000002", "short_name": "深二"}]},
+                {"art_code": "", "title": "没有编号的不要"}]}})
         if "fflow" in url:
             if state["fail_flow"]:
                 return 500, ""
@@ -104,11 +115,13 @@ def test_material_covers_rankings_limits_margin_and_holdings(env):
     assert "持仓：2000 股，市值 2.20 万，成本 9，浮动盈亏 +0.40 万（+22.22%）" in text
     assert "亏损（市盈率为负）" in text and "近5日 +6000.00 万" in text and "对标股票当日：深三 +10.00%" in text
     assert "成本没有登记" in text  # 只登记了代码的那只
-    # 1 个全市场两融 + 每只持仓各 1 个两融、1 个资金流向
-    assert len(calls) == 5
+    assert "## 持仓公告" in text and "2024-03-14 18:30 沪一：关于回购股份的公告（回购）" in text
+    assert "年度报告" not in text  # 太早的公告不进复盘材料
+    # 1 个全市场两融 + 每只持仓各 1 个两融、1 个资金流向 + 1 个公告列表
+    assert len(calls) == 6
 
     # 当天再跑一次：用存下来的，不重复请求
-    assert recap_context(data_dir, "2024-03-14") == text and len(calls) == 5
+    assert recap_context(data_dir, "2024-03-14") == text and len(calls) == 6
 
 
 def test_a_failed_source_is_reported_and_not_retried(env):
@@ -163,3 +176,32 @@ def test_dashboard_gives_the_recent_trend_and_margin_series(env):
     assert trend.build(data_dir, root)["margin"] == result["margin"] and len(calls) == 1
     # 指定日期只看到那一天为止
     assert trend.build(data_dir, root, "2024-03-12")["as_of"] == "2024-03-12"
+
+
+def test_holding_notices_are_cached_and_survive_a_failed_refresh(env):
+    from datetime import datetime, timedelta
+
+    from app.custom.recap_plus import notices
+
+    data_dir, calls, state = env
+    root = data_dir / "user_data" / "extensions" / "recap_plus"
+    now = datetime(2024, 3, 14, 19, 0)
+    held = ["600001.SH", "000002.SZ"]
+    first = notices.latest(root, held, now)
+    assert first["error"] is None and [n["id"] for n in first["items"]] == ["AN1", "AN0"]  # 新的在前；别人的股票不要
+    top = first["items"][0]
+    assert top["name"] == "沪一" and top["title"] == "关于回购股份的公告" and top["kind"] == "回购"
+    assert top["published_at"] == "2024-03-14 18:30"
+    assert top["url"] == "https://data.eastmoney.com/notices/detail/600001/AN1.html"
+
+    # 半小时内不重复请求；过了半小时、或者点了刷新才再取
+    assert notices.latest(root, held, now + timedelta(minutes=29))["items"] == first["items"] and len(calls) == 1
+    notices.latest(root, held, now + timedelta(minutes=31))
+    notices.latest(root, held, now + timedelta(minutes=32), force=True)
+    assert len(calls) == 3
+
+    # 取不到时给出上次存下来的，并说明原因
+    state["fail_notices"] = True
+    failed = notices.latest(root, held, now + timedelta(hours=2))
+    assert failed["items"] == first["items"] and "HTTP 500" in failed["error"]
+    assert notices.latest(root, [], now) == {"items": [], "fetched_at": None, "error": None, "codes": []}

@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from . import context, trend
+from . import context, notices, trend
 
 logger = logging.getLogger(__name__)
 
@@ -67,5 +67,20 @@ def build_router() -> APIRouter:
         if not ql_config.is_configured():
             ql_config.set_data_dir(data_dir / "freecn")
         return trend.build(data_dir, _root(data_dir), as_of)
+
+    @router.get("/notices")
+    def holding_notices(request: Request, refresh: bool = False) -> dict[str, Any]:
+        """持仓股票的最新上市公司公告。半小时内取过的直接用存下来的；refresh=true 时重新取。"""
+        raw = getattr(getattr(getattr(request.app.state, "repo", None), "store", None), "data_dir", None)
+        if not isinstance(raw, (str, Path)):
+            raise HTTPException(status_code=503, detail="数据目录还没有就绪，请稍后再试。")
+        data_dir = Path(raw)
+        from app.custom.tdx_formula.ql.core import clock
+        from app.custom.tdx_formula.ql.core import config as ql_config
+
+        if not ql_config.is_configured():
+            ql_config.set_data_dir(data_dir / "freecn")
+        held = [h["symbol"] for h in context.read_holdings(data_dir)]
+        return notices.latest(_root(data_dir), held, clock.now().replace(tzinfo=None), force=refresh)
 
     return router

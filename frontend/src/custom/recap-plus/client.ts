@@ -43,6 +43,28 @@ export interface RecapReport {
   created_at?: string
 }
 
+export interface Notice {
+  id: string
+  code: string
+  name: string
+  title: string
+  /** 公告类别，如“董事会决议公告”；没有时为空 */
+  kind: string
+  /** 挂出来的时刻，2026-11-16 18:52 */
+  published_at: string
+  notice_date: string
+  /** 公告原文页面 */
+  url: string
+}
+
+export interface Notices {
+  items: Notice[]
+  /** 上次成功取到的时间；从没取到过是 null */
+  fetched_at: string | null
+  /** 这次没取到时的原因（这时 items 是上次存下来的） */
+  error: string | null
+}
+
 async function get<T>(url: string): Promise<T> {
   const response = await fetch(url)
   const payload = await response.json().catch(() => null)
@@ -55,10 +77,12 @@ async function get<T>(url: string): Promise<T> {
 
 export const recapApi = {
   dashboard: () => get<Dashboard>('/api/custom/recap-plus/dashboard'),
+  notices: (refresh = false) => get<Notices>(`/api/custom/recap-plus/notices${refresh ? '?refresh=true' : ''}`),
   reports: () => get<{ reports: RecapReport[] }>('/api/market-recap/reports').then(r => r.reports ?? []),
 }
 
 export const recapKeys = {
   dashboard: ['custom', 'recap-plus', 'dashboard'] as const,
   reports: ['custom', 'recap-plus', 'reports'] as const,
+  notices: ['custom', 'recap-plus', 'notices'] as const,
 }

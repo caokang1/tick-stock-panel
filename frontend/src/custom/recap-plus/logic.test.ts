@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { axisDate, latestPerDay, pct, scale, section, shortDate, signedYi, yi } from './logic'
+import { axisDate, isNew, latestPerDay, pct, previousClose, scale, section, shortDate, signedYi, yi } from './logic'
 import type { RecapReport } from './client'
 
 const report = (as_of: string, created_at: string, content = ''): RecapReport => ({ id: created_at, as_of, content, summary: '', created_at })
@@ -24,6 +24,13 @@ describe('每日复盘页的计算', () => {
     expect(section(content, '一')).toBe('甲\n乙')
     expect(section(content, '六')).toBe('丁')
     expect(section(content, '五')).toBe('')
+  })
+
+  it('公告新不新：上一个工作日收盘之后披露的算新', () => {
+    expect(previousClose(new Date(2026, 10, 16, 19, 0))).toBe('2026-11-13 15:00:00') // 周一往前是周五
+    expect(previousClose(new Date(2026, 10, 17, 9, 0))).toBe('2026-11-16 15:00:00')
+    expect(isNew('2026-11-13 18:04:08', '2026-11-13 15:00:00')).toBe(true)
+    expect(isNew('2026-11-13 09:00:00', '2026-11-13 15:00:00')).toBe(false)
   })
 
   it('图表坐标：空值跳过，柱状图从 0 起', () => {

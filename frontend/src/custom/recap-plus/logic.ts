@@ -75,3 +75,18 @@ export function scale(values: (number | null)[], w: number, h: number, pad: { l:
   }))
   return { points, min, max }
 }
+
+
+/**
+ * 这条公告算不算“新”：披露时间在 since 之后。since 取上一个交易日的收盘时刻比较合适，
+ * 这样周一看到的“新”包括周五盘后和周末披露的。时间按字符串比（都是 2026-11-16 17:51:32 这种写法）。
+ */
+export const isNew = (published: string, since: string): boolean => published.replace('T', ' ') >= since.replace('T', ' ')
+
+/** now 往前数、跳过周末后的上一个工作日 15:00，写成 2026-11-13 15:00:00。不考虑节假日，只影响“新”字标得宽一点。 */
+export function previousClose(now: Date): string {
+  const d = new Date(now)
+  do { d.setDate(d.getDate() - 1) } while (d.getDay() === 0 || d.getDay() === 6)
+  const two = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} 15:00:00`
+}

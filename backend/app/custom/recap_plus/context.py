@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from . import remote
+from . import notices, remote
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +344,10 @@ def build(data_dir: Path, root: Path, as_of: str) -> str:
         lines += _holding_blocks(holdings, days, names, industry, concept, peers, net, as_of)
     else:
         lines += ["", "## 持仓明细", "（“持仓提醒”里还没有登记持仓，持仓复盘一节请写“未登记持仓”。）"]
+    if holdings:
+        from app.custom.tdx_formula.ql.core import clock
+
+        lines += notices.recap_block(root, held, as_of, clock.now().replace(tzinfo=None))
     if net["errors"]:
         missing = "；".join(f"{k}：{v}" for k, v in net["errors"].items())
         lines += ["", f"数据缺口：{missing}。东方财富有一项没取到之后，同一来源后面的请求就不再发了。"]

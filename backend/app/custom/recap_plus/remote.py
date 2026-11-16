@@ -127,6 +127,19 @@ def stock_flow(symbol: str) -> list[dict[str, Any]]:
     return out
 
 
+ANNOUNCEMENTS = "https://np-anotice-stock.eastmoney.com/api/security/ann"
+
+
+def announcements(codes: list[str], count: int) -> list[dict[str, Any]]:
+    """这些股票最近的上市公司公告（新的在前），一次请求取完。codes 是 6 位代码。"""
+    data = _call(ANNOUNCEMENTS, {"sr": "-1", "page_size": str(count), "page_index": "1", "ann_type": "A",
+                                 "client_source": "web", "stock_list": ",".join(codes), "f_node": "0", "s_node": "0"})
+    rows = ((data or {}).get("data") or {}).get("list") if isinstance(data, dict) else None
+    if rows is None:
+        raise UnavailableError("没有取到公告列表")
+    return [r for r in rows if isinstance(r, dict)]
+
+
 def valuations(symbols: list[str]) -> dict[str, dict[str, Any]]:
     """持仓股和对标股的估值等附加项（市盈率、市净率、总市值、量比、振幅），一次请求取完。"""
     from app.custom.tdx_formula.ql.core.errors import QuantLabError
