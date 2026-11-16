@@ -412,3 +412,14 @@ def test_minute_refusal_is_reported_and_pauses_the_source(minute_api):
     with pytest.raises(ProviderRequestError, match="限制了访问"):
         freecn.FreeCnProvider().get_minute(["600001.SH"], None, None)
     assert len(calls) == 1 and get_runtime().limiter.state_of("akshare_sina") == "cooling"
+
+
+def test_star_board_volume_is_converted_from_shares_to_lots():
+    """科创板的成交量接口给的是股，其余是手。不换算的话科创板的量会大 100 倍，量比和换手都跟着错。"""
+    from app.plugins.freecn import quotes
+
+    text = quote_line("sh688001", "科创", 10.5, 10.0) + quote_line("sh600001", "主板", 10.5, 10.0)
+    parsed = quotes.parse(text, 0)
+    assert parsed["688001.SH"]["quote"]["volume"] == pytest.approx(123.45)
+    assert parsed["600001.SH"]["quote"]["volume"] == 12345
+    assert parsed["688001.SH"]["depth"]["bid_volumes"] == [10, 20, 30, 40, 50]  # 盘口的量本来就是手，不动

@@ -100,11 +100,14 @@ def parse(text: str, fallback_ms: int) -> dict[str, dict[str, Any]]:
             amount = wan * 10_000.0 if wan is not None else None
         pct, turnover = _num(f[32]), _num(f[38])
         open_, high, low = _num(f[5]), _num(f[33]), _num(f[34])
+        volume = _num(f[6])
+        if volume is not None and exchange == "SH" and digits.startswith(("688", "689")):
+            volume = volume / 100.0  # 科创板这一项接口给的是“股”，其余股票是“手”；统一成手（盘口的量本来就是手）
         quote = {
             "symbol": symbol, "name": f[1] or None, "last_price": last, "prev_close": prev,
             # 当天还没有成交时接口给 0；这种情况留空，不把 0 当成价格
             "open": open_ if open_ else None, "high": high if high else None, "low": low if low else None,
-            "volume": _num(f[6]), "amount": amount,
+            "volume": volume, "amount": amount,
             "change_pct": pct / 100.0 if pct is not None else (last - prev) / prev,
             "change_amount": _num(f[31]) if _num(f[31]) is not None else last - prev,
             "amplitude": None,
