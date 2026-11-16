@@ -235,3 +235,13 @@ def test_a_dropped_connection_is_retried_once(env):
 def test_helpers():
     assert service.mask("abcd") == "abcd" and service.mask("abcdefghijkl") == "abcd…ijkl"
     assert service.clean_snippet("<em>a</em>\n b  <span class='x'>c</span>") == "a b c"
+
+
+def test_results_are_ordered_newest_first_by_the_date_in_the_title():
+    assert service.title_date("设备大厂调研20260518.pdf") == "2026-05-18"
+    assert service.title_date("20260909_设备投资框架20260908") == "2026-09-09"  # 几个日期取最新的
+    assert service.title_date("2026年5月8日 纪要") == "2026-05-08" and service.title_date("周报 2026-11-03") == "2026-11-03"
+    assert service.title_date("没有日期 13800138000 20261340") == "" and service.title_date(None) == ""
+
+    items = [{"title": t, "date": service.title_date(t)} for t in ["甲", "乙20260101", "丙", "丁20261109", "戊20260101"]]
+    assert [i["title"] for i in service.newest_first(items)] == ["丁20261109", "乙20260101", "戊20260101", "甲", "丙"]

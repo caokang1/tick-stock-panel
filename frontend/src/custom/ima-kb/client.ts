@@ -30,6 +30,8 @@ export interface SearchItem {
   title: string
   /** 命中的片段；只命中标题时是空的 */
   snippet: string
+  /** 从标题里认出来的日期（2026-05-18），认不出为空。结果已按它从新到旧排好 */
+  date?: string
   /** 一次按几个词搜时，这一条是按哪个词搜到的 */
   matched?: string
 }

@@ -85,6 +85,29 @@ def mask(value: str) -> str:
     return value if len(value) <= 8 else f"{value[:4]}…{value[-4:]}"
 
 
+_TITLE_DATE = re.compile(
+    r"(?<!\d)(20\d{2})(?:(\d{2})(\d{2})(?!\d)|[-./年](\d{1,2})[-./月](\d{1,2})(?!\d))"
+)
+
+
+def title_date(title: Any) -> str:
+    """从标题里找日期（如 20260518、2026-05-18、2026年5月18日），返回 2026-05-18；找不到返回空。
+
+    ima 的搜索接口不返回资料的时间，只能从标题里认。标题里有几个日期时取最新的那个。
+    """
+    found: list[str] = []
+    for year, m1, d1, m2, d2 in _TITLE_DATE.findall(str(title or "")):
+        month, day = int(m1 or m2), int(d1 or d2)
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            found.append(f"{year}-{month:02d}-{day:02d}")
+    return max(found, default="")
+
+
+def newest_first(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    """按日期从新到旧排；认不出日期的排在后面，彼此之间保持原来的顺序。"""
+    return sorted(items, key=lambda item: item.get("date") or "", reverse=True)
+
+
 def clean_snippet(text: Any) -> str:
     """命中的片段：去掉高亮用的标签，压成一行，太长就截断。"""
     plain = _TAG.sub("", str(text or ""))
@@ -273,9 +296,10 @@ class ImaService:
                 items.append({
                     "base_id": base["id"], "base_name": base["name"], "media_id": str(item["media_id"]),
                     "title": str(item.get("title") or "（没有标题）"),
+                    "date": title_date(item.get("title")),
                     "snippet": clean_snippet(item.get("highlight_content")),
                 })
-        return {"query": query, "items": items, "errors": errors}
+        return {"query": query, "items": newest_first(items), "errors": errors}
 
     def search_many(self, queries: list[str]) -> dict[str, Any]:
         """依次按几个词搜索，结果合在一起（同一篇只留第一次搜到的），每条记下是按哪个词搜到的。"""
@@ -293,7 +317,7 @@ class ImaService:
                 if key not in seen:
                     seen.add(key)
                     items.append({**item, "matched": term})
-        return {"query": "、".join(terms), "items": items, "errors": errors}
+        return {"query": "、".join(terms), "items": newest_first(items), "errors": errors}
 
     # ---------------- 给 AI 的参考材料 ----------------
     def context_for(self, prompt: str, terms_of: Callable[[str], list[str]]) -> str:

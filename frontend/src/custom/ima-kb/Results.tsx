@@ -21,6 +21,7 @@ export function Results({ result, bases }: { result: SearchResult; bases: number
             {group.items.map(item => (
               <li key={`${item.base_id}:${item.media_id}`} className="border-b border-border/50 pb-3 last:border-0 last:pb-0">
                 <p className="text-sm text-foreground">
+                  {item.date && <span className="mr-2 font-mono text-[11px] tabular-nums text-muted">{item.date}</span>}
                   {item.title}
                   {item.matched && <span className="ml-2 text-[11px] text-muted">按“{item.matched}”搜到</span>}
                 </p>
@@ -34,7 +35,7 @@ export function Results({ result, bases }: { result: SearchResult; bases: number
       ))}
       {result.items.length > 0 && (
         <p className="text-[11px] text-muted">
-          ima 的开放接口基本只按标题匹配，也不提供全文，所以这里多数只有标题。要看内容，请到 ima 里按标题打开。
+          结果按标题里的日期从新到旧排，标题里没有日期的排在后面。ima 的开放接口基本只按标题匹配，也不提供全文，所以这里多数只有标题。要看内容，请到 ima 里按标题打开。
         </p>
       )}
     </div>
