@@ -138,3 +138,28 @@ def test_the_recap_prompt_carries_the_extra_material():
 def test_helpers():
     assert context.wan(123456) == "+12.35 万" and context.wan(-2.5e8) == "-2.50 亿" and context.amt(5e6) == "500.00 万"
     assert context.pct(None) == "—" and context.yi(None) == "—"
+
+
+def test_dashboard_gives_the_recent_trend_and_margin_series(env):
+    from app.custom.recap_plus import trend
+
+    data_dir, calls, _ = env
+    index = data_dir / "kline_index_daily"
+    for day, close in zip(DAYS, [3000.0, 3030.0, 3030.0, 2999.7], strict=True):
+        (index / f"date={day}").mkdir(parents=True)
+        pd.DataFrame([{"symbol": "000001.SH", "close": close}, {"symbol": "399001.SZ", "close": 1.0}]).to_parquet(
+            index / f"date={day}" / "part.parquet")
+    root = data_dir / "user_data" / "extensions" / "recap_plus"
+    result = trend.build(data_dir, root)
+
+    assert result["as_of"] == "2024-03-14" and [d["date"] for d in result["days"]] == DAYS
+    last = result["days"][-1]
+    assert last["sh_close"] == 2999.7 and last["sh_change"] == pytest.approx(-0.01)
+    assert last["amount"] == 15e8 and last["amount_change"] == 7.5e8
+    assert (last["limit_up"], last["limit_down"]) == (2, 1) and (last["up"], last["down"], last["flat"]) == (2, 1, 0)
+    assert result["days"][0]["up"] is None  # 窗口里的第一天没有前一天可比
+    # 两融：旧的在前；只请求一次，当天再看用存下来的
+    assert [m["date"] for m in result["margin"]] == ["2024-03-12", "2024-03-13"] and result["margin_error"] is None
+    assert trend.build(data_dir, root)["margin"] == result["margin"] and len(calls) == 1
+    # 指定日期只看到那一天为止
+    assert trend.build(data_dir, root, "2024-03-12")["as_of"] == "2024-03-12"

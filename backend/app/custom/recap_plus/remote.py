@@ -88,9 +88,9 @@ def _rows(report: str, extra: dict[str, str]) -> list[dict[str, Any]]:
     return [r for r in rows if isinstance(r, dict)]
 
 
-def market_margin() -> list[dict[str, Any]]:
-    """全市场两融最近两天（新的在前）：日期、融资余额、融资买入额、融资净买入、融券余额、两融余额（元）。"""
-    rows = _rows("RPTA_RZRQ_LSHJ", {"sortColumns": "DIM_DATE", "pageSize": "2"})
+def market_margin(count: int = 2) -> list[dict[str, Any]]:
+    """全市场两融最近几天（新的在前）：日期、融资余额、融资买入额、融资净买入、融券余额、两融余额（元）。"""
+    rows = _rows("RPTA_RZRQ_LSHJ", {"sortColumns": "DIM_DATE", "pageSize": str(count)})
     if not rows:
         raise UnavailableError("没有取到全市场两融数据")
     return [{"date": str(r.get("DIM_DATE") or "")[:10], "rzye": r.get("RZYE"), "rzmre": r.get("RZMRE"),

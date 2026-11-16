@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from . import context
+from . import context, trend
 
 logger = logging.getLogger(__name__)
 
@@ -54,5 +54,18 @@ def build_router() -> APIRouter:
             raise HTTPException(status_code=409, detail="本机还没有日线数据。")
         text = recap_context(raw, day)
         return {"as_of": day, "chars": len(text), "context": text}
+
+    @router.get("/dashboard")
+    def dashboard(request: Request, as_of: str | None = None) -> dict[str, Any]:
+        """“每日复盘”页首页的数据：近 15 个交易日的走势和两融序列。"""
+        raw = getattr(getattr(getattr(request.app.state, "repo", None), "store", None), "data_dir", None)
+        if not isinstance(raw, (str, Path)):
+            raise HTTPException(status_code=503, detail="数据目录还没有就绪，请稍后再试。")
+        data_dir = Path(raw)
+        from app.custom.tdx_formula.ql.core import config as ql_config
+
+        if not ql_config.is_configured():
+            ql_config.set_data_dir(data_dir / "freecn")
+        return trend.build(data_dir, _root(data_dir), as_of)
 
     return router
