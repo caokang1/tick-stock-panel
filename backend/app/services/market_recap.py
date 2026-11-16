@@ -191,8 +191,20 @@ def _build_emotion_block(overview: dict) -> str:
     return "\n".join(lines)
 
 
+def _extension_context(repo, as_of: str | None) -> str:
+    """扩展提供的复盘补充材料 (榜单/行业涨跌停/两融/持仓明细)。没装该扩展或失败时为空串。
+
+    会读本机文件并可能联网 (经限流器, 有等待), 调用方须放到线程里执行。
+    """
+    try:
+        from app.custom.recap_plus.routes import recap_context
+    except ImportError:
+        return ""
+    return recap_context(getattr(getattr(repo, "store", None), "data_dir", None), as_of)
+
+
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
-                       bench_context: str = "") -> str:
+                       bench_context: str = "", extra_context: str = "") -> str:
     """构建用户消息:复盘日期 + 市场数据精简切片 + 龙虎榜(可选) + 盘前风向标(可选) + 新闻 + 关注点。"""
     as_of = overview.get("as_of") or "今日"
 
@@ -230,6 +242,10 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
             "## 盘前风向标(竞价)",
             bench_context,
         ])
+
+    # 扩展补充材料 (自带小节标题; 无扩展/失败时为空不占段)
+    if extra_context:
+        parts.extend(["", extra_context])
 
     if news:
         news_lines = []
@@ -338,7 +354,10 @@ async def recap_market_stream(
         from app.services import auction_benchmark as auction_benchmark_svc
 
         bench_ctx = auction_benchmark_svc.build_recap_context(repo.store.data_dir)
-        user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx)
+        import asyncio
+
+        extra_ctx = await asyncio.to_thread(_extension_context, repo, as_of_str)
+        user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx, extra_ctx)
         got_content = False
         async for delta in stream_ai_text(
             [

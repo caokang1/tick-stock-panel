@@ -1,0 +1,140 @@
+"""复盘补充数据扩展的测试。本机数据是造的，联网的部分换成假的，不访问网络。"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from app.custom.recap_plus import EXTENSION_API_VERSION, EXTENSION_ID, context, remote
+from app.custom.recap_plus.routes import recap_context
+from app.extensions import BACKEND_EXTENSION_API_VERSION
+
+DAYS = [f"2024-03-{d:02d}" for d in (11, 12, 13, 14)]
+
+
+def write_market(data_dir: Path) -> None:
+    rows = {
+        "600001.SH": dict(name="沪一", shares=1e9, closes=[10.0, 10.0, 10.0, 11.0], amount=5e8, ups=1, downs=0),
+        "000002.SZ": dict(name="深二", shares=5e9, closes=[20.0, 20.0, 20.0, 18.0], amount=9e8, ups=0, downs=1),
+        "000003.SZ": dict(name="深三", shares=2e8, closes=[5.0, 5.0, 5.0, 5.5], amount=1e8, ups=2, downs=0),
+    }
+    for i, day in enumerate(DAYS):
+        folder = data_dir / "kline_daily_enriched" / f"date={day}"
+        folder.mkdir(parents=True)
+        last = i == len(DAYS) - 1
+        pd.DataFrame([{
+            "symbol": s, "date": day, "close": r["closes"][i], "raw_close": r["closes"][i],
+            "amount": r["amount"] * (1.0 if last else 0.5), "turnover_rate": 1.5,
+            "consecutive_limit_ups": r["ups"] if last else 0, "consecutive_limit_downs": r["downs"] if last else 0,
+        } for s, r in rows.items()]).to_parquet(folder / "part.parquet")
+    (data_dir / "instruments").mkdir()
+    pd.DataFrame([{"symbol": s, "name": r["name"], "total_shares": r["shares"]} for s, r in rows.items()]).to_parquet(
+        data_dir / "instruments" / "instruments.parquet")
+    for table, column, values in (("ext_hy_ths", "所属同花顺行业", ["银行", "地产", "银行"]),
+                                  ("ext_gn_ths", "所属概念", ["甲;乙", "丙", "丁"])):
+        (data_dir / "ext_data" / table).mkdir(parents=True)
+        pd.DataFrame({"股票代码": list(rows), "股票简称": [r["name"] for r in rows.values()], column: values,
+                      "symbol": list(rows), "code": [s[:6] for s in rows]}).to_parquet(
+            data_dir / "ext_data" / table / "part.parquet")
+    lots = data_dir / "user_data" / "lots"
+    lots.mkdir(parents=True)
+    for n, (qty, cost) in enumerate([(1000, 8.0), (1000, 10.0)]):  # 同一只股票的两笔，合成一笔
+        (lots / f"lot_{n}.json").write_text(json.dumps({"id": f"lot_{n}", "symbol": "600001.SH", "qty": qty,
+                                                         "cost_price": cost}), encoding="utf-8")
+    (lots / "lot_9.json").write_text(json.dumps({"id": "lot_9", "symbol": "000002.SZ"}), encoding="utf-8")
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    from app.custom.tdx_formula.ql.core import config as ql_config
+    from app.custom.tdx_formula.ql.data import runtime
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    write_market(data_dir)
+    ql_config.set_data_dir(data_dir / "freecn")
+    runtime.set_sleep(lambda seconds: None)
+    calls: list[dict[str, str]] = []
+    state = {"fail_flow": False}
+
+    def fetch(url: str, params: dict[str, str], timeout: float) -> tuple[int, str]:
+        calls.append({"url": url, **params})
+        if "fflow" in url:
+            if state["fail_flow"]:
+                return 500, ""
+            lines = [f"2024-03-{d:02d},{d * 1e6},-1,-2,3,4" for d in range(1, 15)]
+            return 200, json.dumps({"data": {"klines": lines}})
+        if params["reportName"] == "RPTA_RZRQ_LSHJ":
+            return 200, json.dumps({"result": {"data": [
+                {"DIM_DATE": "2024-03-13 00:00:00", "RZYE": 2.2e12, "RZMRE": 1.3e11, "RZJME": -1e10, "RQYE": 3e10,
+                 "RZRQYE": 2.23e12},
+                {"DIM_DATE": "2024-03-12 00:00:00", "RZYE": 2.0e12, "RZMRE": 1.1e11}]}})
+        return 200, json.dumps({"result": {"data": [
+            {"DATE": "2024-03-13 00:00:00", "RZYE": 3e8, "RZMRE": 9e6, "RZJME": -2e6, "RQYE": 5e6, "RZYEZB": 3.4}]}})
+
+    remote.set_fetch(fetch)
+    remote.set_quotes(lambda symbols: {s: {"extra": {"pe_ttm": -5.0, "pb": 2.0, "total_mv_yi": 100.0,
+                                                    "float_mv_yi": 80.0}} for s in symbols})
+    yield data_dir, calls, state
+    remote.set_fetch(None)
+    remote.set_quotes(None)
+    runtime.set_sleep(None)
+
+
+def test_identity():
+    assert EXTENSION_ID == "community.recap-plus" and EXTENSION_API_VERSION == BACKEND_EXTENSION_API_VERSION
+
+
+def test_material_covers_rankings_limits_margin_and_holdings(env):
+    data_dir, calls, _ = env
+    root = data_dir / "user_data" / "extensions" / "recap_plus"
+    root.mkdir(parents=True)
+    (root / "config.json").write_text(json.dumps({"peers": {"600001.SH": ["000003.SZ"]}}), encoding="utf-8")
+    text = recap_context(data_dir, "2024-03-14")
+
+    assert "沪市 5.00 亿 + 深市 10.00 亿 = 15.00 亿" in text and "前一交易日 7.50 亿" in text
+    assert "| 深二 | 9.00 亿 | -10.00% | 地产 |" in text  # 成交额第一
+    assert "| 深二 | 900 亿 | -10.00% |" in text  # 总市值 = 18 × 50 亿股
+    assert "涨停 2 家，跌停 1 家" in text and "| 银行 | 2 | 0 | 深三(2板)、沪一 | — |" in text
+    assert "数据日期 2024-03-13：融资余额 22000.00 亿" in text and "环比 +10.00%" in text
+    # 持仓：两笔合成一笔，成本按数量加权
+    assert "持仓：2000 股，市值 2.20 万，成本 9，浮动盈亏 +0.40 万（+22.22%）" in text
+    assert "亏损（市盈率为负）" in text and "近5日 +6000.00 万" in text and "对标股票当日：深三 +10.00%" in text
+    assert "成本没有登记" in text  # 只登记了代码的那只
+    # 1 个全市场两融 + 每只持仓各 1 个两融、1 个资金流向
+    assert len(calls) == 5
+
+    # 当天再跑一次：用存下来的，不重复请求
+    assert recap_context(data_dir, "2024-03-14") == text and len(calls) == 5
+
+
+def test_a_failed_source_is_reported_and_not_retried(env):
+    data_dir, calls, state = env
+    state["fail_flow"] = True
+    text = recap_context(data_dir, "2024-03-14")
+    assert "主力资金：没有取到" in text and "数据缺口：主力资金流向" in text
+    # 第一只失败后（限流器自己按设定重试过），不再给第二只发
+    assert len({c["secid"] for c in calls if "fflow" in c["url"]}) == 1
+    assert "数据日期 2024-03-13" in text  # 之前取到的照常给出
+
+
+def test_no_data_for_the_day_gives_nothing(env):
+    data_dir, calls, _ = env
+    assert recap_context(data_dir, "2024-03-20") == "" and recap_context(None, "2024-03-14") == ""
+    assert calls == []
+
+
+def test_the_recap_prompt_carries_the_extra_material():
+    from app.services.market_recap import _build_user_prompt
+
+    prompt = _build_user_prompt({"as_of": "2024-03-14"}, [], "", extra_context="## 持仓明细\n- 甲")
+    assert "## 持仓明细\n- 甲" in prompt
+    assert "## 持仓明细" not in _build_user_prompt({"as_of": "2024-03-14"}, [], "")
+
+
+def test_helpers():
+    assert context.wan(123456) == "+12.35 万" and context.wan(-2.5e8) == "-2.50 亿" and context.amt(5e6) == "500.00 万"
+    assert context.pct(None) == "—" and context.yi(None) == "—"

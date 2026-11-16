@@ -125,7 +125,13 @@ def parse(text: str, fallback_ms: int) -> dict[str, dict[str, Any]]:
                 "ask_prices": [p or 0.0 for p in ask_p], "ask_volumes": [int(v or 0) for v in ask_v],
                 "timestamp": ts,
             }
-        out[symbol] = {"quote": quote, "depth": depth}
+        # 估值等附加项：不属于面板的行情字段，单独放着，给复盘的持仓部分用
+        def at(i: int, f: list[str] = f) -> float | None:
+            return _num(f[i]) if len(f) > i else None
+
+        extra = {"pe_ttm": at(39), "pb": at(46), "amplitude_pct": at(43), "float_mv_yi": at(44),
+                 "total_mv_yi": at(45), "vol_ratio": at(49)}
+        out[symbol] = {"quote": quote, "depth": depth, "extra": extra}
     return out
 
 
