@@ -178,7 +178,7 @@ export function Lots() {
                           </button>
                         </td>
                         <td className="px-2 py-2.5 text-right font-mono text-secondary">{lot.qty}</td>
-                        <td className="px-2 py-2.5 text-right font-mono text-foreground">{lot.cost_price}</td>
+                        <td className="px-2 py-2.5 text-right font-mono text-foreground">{lot.cost_price > 0 ? lot.cost_price : '—'}</td>
                         <td className="px-2 py-2.5 text-right font-mono text-secondary">{lastPrices[lot.symbol] != null ? fmtPrice(lastPrices[lot.symbol]) : '—'}</td>
                         <td className="px-2 py-2.5 text-right"><CostPnL close={lastPrices[lot.symbol]} cost={lot.cost_price} /></td>
                         <td className="px-2 py-2.5 text-right font-mono text-bull">{lot.target_pct > 0 ? `${lot.target_pct}%` : '—'}</td>
@@ -304,12 +304,12 @@ function LotDialog({ lot, onClose }: { lot: Lot; onClose: () => void }) {
       stop_pct: parseNum(nums.stop_pct),
       lead_days: Math.floor(parseNum(nums.lead_days)),
     }
-    if (!((vals.cost_price ?? 0) > 0)) return setError('成本价必须为正数')
-    if ((vals.qty ?? 0) < 0 || (vals.target_pct ?? 0) < 0 || (vals.stop_pct ?? 0) < 0 || (vals.lead_days ?? 0) < 0) {
-      return setError('数量 / 百分比 / 提前天数不能为负数')
+    if ((vals.cost_price ?? 0) < 0 || (vals.qty ?? 0) < 0 || (vals.target_pct ?? 0) < 0 || (vals.stop_pct ?? 0) < 0 || (vals.lead_days ?? 0) < 0) {
+      return setError('成本价 / 数量 / 百分比 / 提前天数不能为负数')
     }
-    if (!((vals.target_pct ?? 0) > 0 || (vals.stop_pct ?? 0) > 0 || draft.remind_date)) {
-      return setError('止盈% / 止损% / 到期日 至少设置一项')
+    // 成本价、止盈、止损、到期日都可以先不填 (只登记持仓, 不产生提醒); 但设了止盈/止损就得有成本价
+    if (((vals.target_pct ?? 0) > 0 || (vals.stop_pct ?? 0) > 0) && !((vals.cost_price ?? 0) > 0)) {
+      return setError('设了止盈% 或止损% 时必须填成本价')
     }
     save.mutate(vals)
   }
@@ -366,7 +366,7 @@ function LotDialog({ lot, onClose }: { lot: Lot; onClose: () => void }) {
             <input type="number" min={0} placeholder="0" {...numField('qty')} className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
           </label>
           <label className="space-y-1.5">
-            <span className="text-[11px] text-muted">成本价</span>
+            <span className="text-[11px] text-muted">成本价 (可先不填)</span>
             <input type="number" min={0} step="any" placeholder="0" {...numField('cost_price')} className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
           </label>
           <label className="space-y-1.5">

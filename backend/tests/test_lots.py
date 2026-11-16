@@ -87,17 +87,27 @@ def test_validate_lot_rules_and_errors():
     lots_domain.validate_lot(lots_domain.normalize_lot(_lot()))
     for overrides in (
         {"symbol": " "},
-        {"cost_price": 0},
+        {"cost_price": -1},
+        {"cost_price": 0},  # 默认批次设了止盈止损, 没有成本就算不出触发价
         {"qty": -1},
         {"target_pct": -1},
         {"stop_pct": -1},
         {"lead_days": -1},
         {"remind_date": "2026/09/01"},
         {"buy_date": "bad"},
-        {"target_pct": 0, "stop_pct": 0, "remind_date": None},
     ):
         with pytest.raises(ValueError):
             lots_domain.validate_lot({**_lot(), **overrides})
+
+
+def test_a_lot_can_be_saved_with_only_a_symbol():
+    """成本价、止盈、止损、到期日都可以先不填: 只登记持仓, 不派生任何监控规则。"""
+    bare = lots_domain.normalize_lot({"id": "lot_bare", "symbol": "600519.SH"})
+    lots_domain.validate_lot(bare)
+    assert lots_domain.lot_to_rules(bare) == (None, None)
+    # 只填成本、不设监控点也可以
+    lots_domain.validate_lot({**bare, "cost_price": 12.3})
+    assert lots_domain.lot_to_rules({**bare, "cost_price": 12.3}) == (None, None)
 
 
 def test_normalize_lot_defaults():
@@ -195,4 +205,4 @@ def test_upsert_lot_invalid_returns_400(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as ei:
         lots_api.upsert_lot(lots_api.LotModel(**_lot(cost_price=0)), request)
     assert ei.value.status_code == 400
-    assert "cost_price" in str(ei.value.detail)
+    assert "成本价" in str(ei.value.detail)  # 默认批次设了止盈止损, 没有成本就算不出触发价
