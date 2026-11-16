@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +78,7 @@ def build(data_dir: Path, root: Path, as_of: str | None = None) -> dict[str, Any
             point["sh_close"] = float(hit["close"].iloc[0])
         points.append(point)
         prev = market
-    for before, point in zip(points, points[1:], strict=False):
+    for before, point in pairwise(points):
         if before["sh_close"] and point["sh_close"]:
             point["sh_change"] = point["sh_close"] / before["sh_close"] - 1.0
         if before["amount"] and point["amount"]:
