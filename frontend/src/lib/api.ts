@@ -527,6 +527,28 @@ export interface OverviewDimensionRankItem {
   } | null
 }
 
+export interface EmotionTermDetail {
+  key: string
+  label: string
+  unit: string
+  weight: number
+  low: number
+  high: number
+  /** 指标的实际值; 本次取不到数时为 null */
+  value: number | null
+  /** 换算成 0..100 的分; 取不到数时为 null */
+  score: number | null
+}
+
+export interface EmotionDimensionDetail {
+  key: string
+  label: string
+  value: number
+  weight: number
+  invert: boolean
+  terms?: EmotionTermDetail[]
+}
+
 export interface OverviewMarket {
   as_of: string | null
   quote_status: {
@@ -556,7 +578,13 @@ export interface OverviewMarket {
   trend: { above_ma5: number; above_ma20: number; above_ma60: number; above_ma5_pct: number; above_ma20_pct: number; above_ma60_pct: number; new_high: number; new_low: number }
   activity: { avg_turnover: number; high_turnover: number; high_vol_ratio: number; vol_ratio: number }
   radar: { key: string; label: string; value: number }[]
-  emotion: { score: number; label: string }
+  emotion: {
+    score: number
+    label: string
+    /** 各维度得分与指标明细 (看板情绪标签的悬停明细用; 旧快照里没有) */
+    dimensions?: EmotionDimensionDetail[]
+    thresholds?: Record<string, number>
+  }
   top_gainers: MarketSnapshotRow[]
   top_losers: MarketSnapshotRow[]
   turnover_leaders: MarketSnapshotRow[]

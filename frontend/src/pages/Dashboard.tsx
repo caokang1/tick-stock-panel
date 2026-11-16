@@ -13,8 +13,9 @@ import type { NavItem } from '@/lib/listNav'
 import { SettingsModal } from '@/components/data/SettingsModal'
 import { useAdjFactorSyncGate } from '@/components/AdjFactorSyncGate'
 import { STAGE_LABELS } from '@/components/data/ActiveJobCard'
-import { scoreColor, quoteAge } from '@/components/dashboard/shared'
+import { quoteAge } from '@/components/dashboard/shared'
 import { DashboardGrid } from '@/components/dashboard/DashboardGrid'
+import { EmotionBadge } from '@/components/dashboard/EmotionDetail'
 import { AddWidgetPanel } from '@/components/dashboard/AddWidgetPanel'
 import { useDashboardLayout } from '@/components/dashboard/useDashboardLayout'
 import { DEFAULT_LAYOUT, widgetDef, type WidgetCtx } from '@/components/dashboard/registry'
@@ -258,16 +259,7 @@ export function Dashboard() {
         <div className="flex items-center gap-2">
           <Gauge className="h-4 w-4 text-accent" />
           <h1 className="text-[16px] leading-6 font-semibold text-foreground">市场看板</h1>
-          <span
-            className="rounded-full border px-2 py-0.5 text-[10px] font-medium"
-            style={{
-              color: scoreColor(score),
-              borderColor: `${scoreColor(score)}40`,
-              background: `${scoreColor(score)}14`,
-            }}
-          >
-            {data.emotion.label} · {score}
-          </span>
+          <EmotionBadge emotion={data.emotion} score={score} />
         </div>
         <div className="flex items-center gap-3 text-[11px] text-muted">
           {currentDate ? (

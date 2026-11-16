@@ -187,6 +187,28 @@ def dimension_value(dim: dict, metrics: dict) -> int:
     return round(weighted)
 
 
+def term_details(dim: dict, metrics: dict) -> list[dict]:
+    """维度下每个指标的明细: 实际值、换算分、权重、区间。仅供展示 (看板悬停明细), 不参与计算。
+
+    本次取不到数的指标 value/score 为 None (计算时被跳过, 与 dimension_value 一致)。
+    """
+    out: list[dict] = []
+    for term in dim["terms"]:
+        present = term["key"] in metrics
+        value = _finite(metrics.get(term["key"])) if present else None
+        out.append({
+            "key": term["key"],
+            "label": term["label"],
+            "unit": term.get("unit", ""),
+            "weight": term["weight"],
+            "low": term["low"],
+            "high": term["high"],
+            "value": value,
+            "score": score_of(metrics[term["key"]], term["low"], term["high"]) if present else None,
+        })
+    return out
+
+
 def compute(metrics: dict, config: dict | None = None) -> dict:
     """指标 + 配置 → {score, label, radar, dimensions}。
 
@@ -206,6 +228,7 @@ def compute(metrics: dict, config: dict | None = None) -> dict:
             "value": value,
             "weight": dim["weight"],
             "invert": bool(dim.get("invert")),
+            "terms": term_details(dim, metrics),
         })
 
     # 等权时直接取整数均值: 权重在均值里本就约掉, 而 Python 3.12+ 的 sum() 对

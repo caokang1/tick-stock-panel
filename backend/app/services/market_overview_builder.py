@@ -628,7 +628,13 @@ def build_market_overview(
             "vol_ratio": avg_vol_ratio,
         },
         "radar": radar,
-        "emotion": {"score": emotion_score, "label": emotion_label},
+        "emotion": {
+            "score": emotion_score,
+            "label": emotion_label,
+            # 悬停明细用: 各维度得分 + 每个指标的实际值/换算分/权重/区间, 以及分档线
+            "dimensions": emotion["dimensions"],
+            "thresholds": emotion["thresholds"],
+        },
         "top_gainers": _top_rows(rows, "change_pct", True),
         "top_losers": _top_rows(rows, "change_pct", False),
         "turnover_leaders": _top_rows(rows, "amount", True),
