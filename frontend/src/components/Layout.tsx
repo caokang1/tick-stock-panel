@@ -883,14 +883,19 @@ export function Layout() {
         <div className={cn('border-b border-border shrink-0', railMode ? 'px-2 pt-3 pb-2' : 'px-4 pt-4 pb-3')}>
           {/* Brand block — 收起时只显 logo 居中 */}
           <div className={cn('flex', railMode ? 'flex-col items-center gap-2' : 'items-center gap-2')}>
-            <Logo
-              size={railMode ? 24 : 26}
-              className="shrink-0 drop-shadow-[0_0_8px_rgba(139,92,246,0.4)]"
-              style={{ color: BRAND }}
-            />
-            {!railMode && (
-              <div className="font-semibold text-[11px] uppercase tracking-[0.12em] text-foreground/90 whitespace-nowrap">
-                Tick Stock Panel
+            {/* 本地定制: 展开时用一句话代替图标和名称; 收起后放不下这句话, 仍显示图标 */}
+            {railMode ? (
+              <Logo
+                size={24}
+                className="shrink-0 drop-shadow-[0_0_8px_rgba(139,92,246,0.4)]"
+                style={{ color: BRAND }}
+              />
+            ) : (
+              <div
+                className="font-semibold text-[13px] tracking-[0.08em] whitespace-nowrap drop-shadow-[0_0_8px_rgba(139,92,246,0.4)]"
+                style={{ color: BRAND }}
+              >
+                知行合一，贪是原罪
               </div>
             )}
             {/* 收起/展开 按钮 (桌面三态循环) / 移动端抽屉关闭按钮 */}
