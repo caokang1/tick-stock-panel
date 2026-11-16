@@ -39,6 +39,15 @@ function RemainingDays({ remind }: { remind?: string | null }) {
 }
 
 /** 成本 vs 现价的盈亏% (纯价格比例, 无数量参与) */
+/** 市值 = 数量 × 现价; 没填数量或没有现价时算不出来 */
+function marketValue(qty: number, close?: number): number | null {
+  return qty > 0 && close != null && Number.isFinite(close) ? qty * close : null
+}
+
+function fmtMarketValue(v: number | null): string {
+  return v == null ? '—' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
 function CostPnL({ close, cost }: { close?: number; cost: number }) {
   if (close == null || !(cost > 0)) return <span className="text-muted/60">—</span>
   const pnl = (close - cost) / cost
@@ -154,6 +163,7 @@ export function Lots() {
                       <th className="px-2 py-2 font-medium text-right">数量(参考)</th>
                       <th className="px-2 py-2 font-medium text-right">成本价</th>
                       <th className="px-2 py-2 font-medium text-right">现价</th>
+                      <th className="px-2 py-2 font-medium text-right">市值</th>
                       <th className="px-2 py-2 font-medium text-right">盈亏%</th>
                       <th className="px-2 py-2 font-medium text-right">止盈%</th>
                       <th className="px-2 py-2 font-medium text-right">止损%</th>
@@ -180,6 +190,7 @@ export function Lots() {
                         <td className="px-2 py-2.5 text-right font-mono text-secondary">{lot.qty}</td>
                         <td className="px-2 py-2.5 text-right font-mono text-foreground">{lot.cost_price > 0 ? lot.cost_price : '—'}</td>
                         <td className="px-2 py-2.5 text-right font-mono text-secondary">{lastPrices[lot.symbol] != null ? fmtPrice(lastPrices[lot.symbol]) : '—'}</td>
+                        <td className="px-2 py-2.5 text-right font-mono tabular-nums text-foreground">{fmtMarketValue(marketValue(lot.qty, lastPrices[lot.symbol]))}</td>
                         <td className="px-2 py-2.5 text-right"><CostPnL close={lastPrices[lot.symbol]} cost={lot.cost_price} /></td>
                         <td className="px-2 py-2.5 text-right font-mono text-bull">{lot.target_pct > 0 ? `${lot.target_pct}%` : '—'}</td>
                         <td className="px-2 py-2.5 text-right font-mono text-bear">{lot.stop_pct > 0 ? `${lot.stop_pct}%` : '—'}</td>
@@ -225,6 +236,18 @@ export function Lots() {
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot>
+                    <tr className="border-t border-border/60 bg-surface/60 text-[11px]">
+                      <td className="px-4 py-2 text-muted" colSpan={4}>市值合计</td>
+                      <td className="px-2 py-2 text-right font-mono font-semibold tabular-nums text-foreground">
+                        {fmtMarketValue(sortedLots.reduce<number | null>((sum, lot) => {
+                          const v = marketValue(lot.qty, lastPrices[lot.symbol])
+                          return v == null ? sum : (sum ?? 0) + v
+                        }, null))}
+                      </td>
+                      <td colSpan={7} />
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
