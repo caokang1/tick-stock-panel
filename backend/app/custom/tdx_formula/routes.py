@@ -7,14 +7,17 @@ import logging
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .boards import BoardService
+from .bridge import Bridge, Hooks
 from .data_service import DataService
 from .live_service import LiveService
+from .ql.backtest import strategy_store
 from .ql.core import clock
 from .ql.core.errors import FormulaError, QuantLabError
 from .ql.data import store as ql_store
@@ -73,6 +76,10 @@ class SourcePolicyUpdate(BaseModel):
 class ScheduleUpdate(BaseModel):
     run_time: str | None = Field(default=None, max_length=5)
     auto_sync_tsp: bool | None = None
+
+
+class BridgeUpdate(BaseModel):
+    enabled: bool
 
 
 class StrategyConfig(BaseModel):
@@ -141,12 +148,91 @@ def _fail(e: QuantLabError) -> HTTPException:
     return HTTPException(status_code=e.http_status, detail=detail)
 
 
+class PanelHooks(Hooks):
+    """用 TSP 自己的函数存、删策略和清缓存，这样它该做的善后（重新载入、清监控状态等）一样不少。
+
+    TSP 的这些函数原本是接口函数，只用到 ``request.app``，所以这里递一个只带 app 的替身进去。
+    """
+
+    def __init__(self, app: Any, data_dir: Path) -> None:
+        self._app = app
+        self._data_dir = data_dir
+        self._request: Any = SimpleNamespace(app=app)
+
+    def after(self) -> None:
+        from app.indicators.pipeline import invalidate_custom_signals
+        from app.services import strategy_cache
+        from app.strategy import custom_signals
+
+        custom_signals.invalidate_intraday_cache()
+        invalidate_custom_signals()
+        strategy_cache.clear_cache(self._data_dir)
+        repo = self._app.state.repo
+        if hasattr(repo, "clear_cache"):
+            repo.clear_cache()
+
+    def _engine(self) -> Any:
+        return getattr(self._app.state, "strategy_engine", None)
+
+    def save_strategy(self, strategy_id: str, code: str, name: str, description: str) -> str | None:
+        engine = self._engine()
+        if not engine:
+            return "面板的策略引擎还没有就绪"
+        from app.api import strategy as panel_strategy
+
+        try:
+            engine.get(strategy_id)
+            mode = "update"
+        except ValueError:
+            mode = "create"
+        req = panel_strategy.StrategyCodeSaveRequest(
+            code=code, strategy_id=strategy_id, target_source="custom", mode=mode, name=name, description=description)
+        try:
+            panel_strategy._save_strategy_code(req, self._request)
+        except Exception as e:  # noqa: BLE001 —— TSP 的校验没过：把原因带回去显示，表和信号照样留着
+            logger.warning("生成的面板策略 %s 没有存成：%s", strategy_id, e)
+            return str(e)
+        if mode == "create":
+            # 第一次生成时顺手放进“策略”页的策略池，不然用户得自己去策略库里找出来添加
+            try:
+                from app.api import strategy_pool
+
+                strategy_pool.add_entry(strategy_id)
+            except Exception as e:  # noqa: BLE001 —— 放不进去不影响别的，用户仍可在策略库里手动添加
+                logger.warning("面板策略 %s 没有放进策略池：%s", strategy_id, e)
+        return None
+
+    def delete_strategy(self, strategy_id: str) -> None:
+        engine = self._engine()
+        if not engine:
+            return
+        from app.api import strategy as panel_strategy
+
+        try:
+            engine.get(strategy_id)
+        except ValueError:
+            return
+        try:
+            panel_strategy.delete_strategy(strategy_id, self._request)
+        except HTTPException as e:
+            logger.warning("生成的面板策略 %s 没有删掉：%s", strategy_id, e.detail)
+
+
 def build_router(background: bool = True) -> APIRouter:
     """background：是否启动每分钟检查一次的后台线程（测试里关掉）。"""
     services: dict[str, tuple[FormulaService, LiveService, DataService]] = {}
     guard = threading.Lock()
     tsp_sync = TspSync()
     board_services: dict[str, BoardService] = {}
+    bridges: dict[str, Bridge] = {}
+
+    def bridge_of(app: Any) -> tuple[Bridge, Path, Hooks]:
+        """返回（送进面板的那一套，TSP 数据目录，要 TSP 那边配合做的事）。"""
+        formula_service = pair(app)[0]
+        data_dir = Path(app.state.repo.store.data_dir)
+        with guard:
+            bridge = bridges.setdefault(str(data_dir), Bridge(formula_service.panel, formula_service._evaluate))
+        return bridge, data_dir, PanelHooks(app, data_dir)
 
     def boards_of(app: Any) -> tuple[BoardService, Path]:
         pair(app)  # 确保数据目录、限流器都已就绪
@@ -201,6 +287,9 @@ def build_router(background: bool = True) -> APIRouter:
                         formula_service, live_service, data_service = pair(app)
                         data_service.tick()
                         live_service.tick()
+                        if not data_service.busy():  # 开了“送进面板”的策略：行情有新的一天或者策略改过，就重新送一次
+                            bridge, tsp_dir, hooks = bridge_of(app)
+                            bridge.tick(tsp_dir, hooks)
                         # 行情更新完，TSP 那份还是旧的，就让 TSP 接着同步一次
                         now = clock.now()
                         latest = ql_store.latest_date() if formula_service.has_data() else None
@@ -352,6 +441,22 @@ def build_router(background: bool = True) -> APIRouter:
     @router.post("/strategies/{strategy_id}/stop")
     def stop_strategy(strategy_id: str, request: Request) -> dict[str, Any]:
         return run(live(request).stop, strategy_id)
+
+    # ---------------- 送进面板的因子库、信号库 ----------------
+    @router.get("/bridge")
+    def bridge_view(request: Request) -> list[dict[str, Any]]:
+        return run(bridge_of(request.app)[0].view)
+
+    @router.put("/strategies/{strategy_id}/bridge")
+    def bridge_update(strategy_id: str, body: BridgeUpdate, request: Request) -> list[dict[str, Any]]:
+        bridge, tsp_dir, hooks = bridge_of(request.app)
+        run(bridge.set_enabled, strategy_id, body.enabled, tsp_dir, hooks)
+        if body.enabled:
+            # 全市场算一遍要几十秒，放到后台线程里，页面上先显示“正在计算”
+            strategy = run(strategy_store.get_strategy, strategy_id)
+            threading.Thread(target=bridge.export, args=(strategy, tsp_dir, hooks),
+                             name="tdx-formula-bridge", daemon=True).start()
+        return run(bridge.view)
 
     # ---------------- 组合回测 ----------------
     @router.post("/backtest")

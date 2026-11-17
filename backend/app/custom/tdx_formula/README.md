@@ -91,6 +91,26 @@
 
 “全量分钟”（盘中全市场分钟落盘）没有做：免费来源没有能一次给全市场的接口，要发的请求是其他几项的几百倍。
 
+## 送进面板：因子库、信号库、选股、回测
+
+TSP 自带的信号只认“字段 比较 数值”，通达信公式翻译不过去。所以公式照旧由本扩展的引擎计算，把**结果**交给 TSP
+（`bridge.py`）。在“策略”页的列表里点“送进面板”，就会：
+
+| 生成的东西 | 在哪里 | 内容 |
+| --- | --- | --- |
+| 一张扩展时序表 `tdx_<策略编号>` | `data/ext_data/` | `xg` 选股结果（1/0）、`c1…` 各条件的结果、`sell` 卖出条件、条件最后一句里用到的公式变量（最多 12 个） |
+| 因子 `ext_tdx_<策略编号>_<字段>` | “因子”页“扩展数据”一组 | 上面每个字段各一个 |
+| 信号 `tdx_<策略编号>_xg` 等 | “信号库”，名字以“公式·”开头 | 条件就是“字段 == 1” |
+| 策略 `custom_tdx_<策略编号>` | 左侧“策略”“回测”页的策略列表 | 公式选中的那天买入；止损、最长持有天数、卖出条件照搬公式策略 |
+
+要知道的几点：
+
+- 结果每天行情更新后重算一次（后台每分钟看一眼：行情到了新的一天、或者策略改过，就重新送）。盘中看到的是上一个交易日的值。
+- 只送最近 750 个交易日（约三年）。面板回测更早的日期时这些字段是空的，等于没有信号。
+- 面板的策略没有止盈这一项，所以面板回测和本扩展自己的回测结果不会一样。
+- 关掉“送进面板”或者删掉策略，上面四样一起去掉；面板里引用了它们的策略和监控会失效。
+- 全市场算一遍：普通公式十几秒，带筹码函数（WINNER/COST）的一两分钟。
+
 ## 每天的提醒是怎么产生的
 
 扩展里有一个后台线程每分钟看一眼：
@@ -153,6 +173,7 @@
   `POST data/stop`、`POST data/update`、`POST data/import`、`GET/PUT data/schedule`
 - 公式与统计：`GET blocks`、`GET options`、`POST parse`、`POST stats`、`POST signals`、`POST picks`
 - 策略：`GET/POST strategies`、`GET/PUT/DELETE strategies/{id}`、`POST strategies/{id}/start`、`POST strategies/{id}/stop`
+- 送进面板：`GET bridge`、`PUT strategies/{id}/bridge`
 - 回测：`POST backtest`、`GET strategies/{id}/backtest`
 - 提醒与账户：`GET today`、`GET strategies/{id}/account`、`POST daily/run`
 - 实际持仓：`GET/PUT strategies/{id}/real`、`POST strategies/{id}/real/skip-all`、`POST strategies/{id}/real/positions`、
@@ -165,6 +186,7 @@
 - `service.py`：读全市场数据、解析公式、信号统计、从别处导入行情。
 - `data_service.py`：行情的下载、更新、限速设置、每天自动更新的时间。
 - `live_service.py`：策略、组合回测、每日任务、推送、实际持仓。
+- `bridge.py`：把策略的结果送进 TSP 的因子库、信号库，并生成一条 TSP 的策略。
 - `ql/`：计算和取数的内核，从作者的另一个项目 quant-lab 带过来：全市场日线的矩阵表示、通达信公式的解析与求值、
   条件拆分、信号统计、组合回测、模拟账户逐日推进、实际持仓（`core/`、`tdx/`、`blocks/`、`backtest/`、`live/`），
   以及数据层 `data/`（各来源的适配器、限流器、按优先级换来源、下载与续传、本机存储）。

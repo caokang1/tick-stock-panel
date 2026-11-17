@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
 import { toast } from '@/components/Toast'
-import { tdxApi, tdxKeys, type StrategyDetail, type StrategySummary } from './client'
+import { tdxApi, tdxKeys, type BridgeRow, type StrategyDetail, type StrategySummary } from './client'
 import { formFromConfig, pct, statusLabel, tone, type StrategyForm } from './logic'
 import { StrategyEditor } from './StrategyEditor'
 import {
@@ -24,6 +24,14 @@ export function StrategyTab({ onGoToday }: { onGoToday: () => void }) {
   const status = useQuery({ queryKey: tdxKeys.status, queryFn: tdxApi.status, staleTime: 30_000 })
   const options = useQuery({ queryKey: tdxKeys.options, queryFn: tdxApi.options, staleTime: Infinity })
   const list = useQuery({ queryKey: tdxKeys.strategies, queryFn: tdxApi.strategies, staleTime: 30_000 })
+
+  // 送进面板的情况：有正在计算或者刚打开还没结果的，就每 5 秒看一次
+  const bridge = useQuery({
+    queryKey: tdxKeys.bridge, queryFn: tdxApi.bridge, staleTime: 30_000,
+    refetchInterval: q => ((q.state.data as BridgeRow[] | undefined)?.some(r => r.enabled && (r.busy || r.ok == null)) ? 5000 : false),
+  })
+  const bridgeOf = (id: string) => bridge.data?.find(r => r.strategy_id === id)
+  const sent = (bridge.data ?? []).filter(r => r.enabled)
 
   const [draft, setDraft] = useState<Draft | null>(null)
   const [justStarted, setJustStarted] = useState<string | null>(null)
@@ -77,6 +85,14 @@ export function StrategyTab({ onGoToday }: { onGoToday: () => void }) {
       qc.removeQueries({ queryKey: tdxKeys.backtest(id) })
       if (draft?.id === id) { dirty.current = false; setDraft(blank()) }
       toast('已删除', 'success')
+    },
+    onError: e => toast(errorText(e)),
+  })
+  const toggleBridge = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => tdxApi.setBridge(id, enabled),
+    onSuccess: (rows, { enabled }) => {
+      qc.setQueryData(tdxKeys.bridge, rows)
+      toast(enabled ? '已开始计算，算完会出现在面板的因子库和信号库里' : '已从面板的因子库和信号库里撤掉', 'success')
     },
     onError: e => toast(errorText(e)),
   })
@@ -147,6 +163,26 @@ export function StrategyTab({ onGoToday }: { onGoToday: () => void }) {
                               {start.isPending && start.variables === s.id ? '正在设置…' : '设为运行中'}
                             </button>
                           )}
+                          {bridgeOf(s.id)?.enabled ? (
+                            <button
+                              className={LINK_MUTED} disabled={busy || toggleBridge.isPending}
+                              onClick={() => {
+                                if (window.confirm(`把“${s.name}”从面板的因子库和信号库里撤掉？面板里用到它的策略和监控会失效。`)) {
+                                  toggleBridge.mutate({ id: s.id, enabled: false })
+                                }
+                              }}
+                            >
+                              从面板撤掉
+                            </button>
+                          ) : (
+                            <button
+                              className={LINK} disabled={busy || toggleBridge.isPending || !bridge.data}
+                              title="把这条策略的选股结果和公式变量送进面板的因子库、信号库，面板的选股、回测、监控中心就能直接用"
+                              onClick={() => toggleBridge.mutate({ id: s.id, enabled: true })}
+                            >
+                              送进面板
+                            </button>
+                          )}
                           <button className={LINK_DANGER} disabled={busy} onClick={() => del(s)}>删除</button>
                         </td>
                       </tr>
@@ -155,6 +191,44 @@ export function StrategyTab({ onGoToday }: { onGoToday: () => void }) {
                 </table>
               </div>
             )}
+        {sent.length > 0 && (
+          <div className="space-y-2 rounded-btn border border-border bg-elevated/40 p-3">
+            <h3 className="text-xs font-medium text-foreground">已送进面板</h3>
+            {sent.map(r => (
+              <div key={r.strategy_id} className="space-y-1 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-foreground">{r.name}</span>
+                  {r.busy || r.ok == null ? <Tag tone="muted">正在计算，全市场算一遍大约一两分钟</Tag>
+                    : r.ok ? <Tag tone="accent">{r.message}</Tag>
+                      : <span className="text-danger">{r.message}</span>}
+                </div>
+                {r.panel_strategy && (
+                  <p className="text-[11px] text-muted">
+                    面板策略：在面板左侧“策略”“回测”页的策略列表里叫“公式·{r.name}”，公式选中的那天买入。
+                  </p>
+                )}
+                {r.ok && !r.panel_strategy && r.panel_strategy_problem && (
+                  <p className="text-[11px] text-danger">面板策略没有生成成：{r.panel_strategy_problem}。因子和信号不受影响。</p>
+                )}
+                {r.fields.length > 0 && (
+                  <ul className="space-y-0.5 text-[11px] text-muted">
+                    {r.fields.map(f => (
+                      <li key={f.name}>
+                        {f.is_signal ? '信号' : '因子'}：{f.label}
+                        <code className="ml-2 select-all rounded bg-elevated px-1 text-secondary">{f.column}</code>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+            <p className="text-[11px] text-muted">
+              标“信号”的在面板“信号库”里各有一条名字以“公式·”开头的信号，监控中心和面板自己的策略里可以直接选它；标“因子”的在“因子”页的“扩展数据”一组里，
+              也可以在信号库里用它写条件。结果每天行情更新后重算一次，盘中看到的是上一个交易日的值；只送最近约三年，面板回测更早的日期时没有信号。
+              面板回测只照搬这里的止损和最长持有天数，没有止盈，所以和本页的回测结果不会一样。
+            </p>
+          </div>
+        )}
         <p className="text-[11px] text-muted">
           “运行中”的策略每天收盘后按最新行情生成买卖提醒，并用一个模拟账户假设每条都照做，用来衡量策略本身。停用后不再生成提醒，记录都留着。
         </p>

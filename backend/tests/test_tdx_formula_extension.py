@@ -1077,3 +1077,179 @@ def test_statements_that_feed_no_output_are_not_checked_or_evaluated():
     with pytest.raises(FormulaError) as caught:
         evaluate(parse("T1:=没见过的函数(C);\nXG:C>T1;"), panel)
     assert caught.value.kind == "unsupported"
+
+
+# ---------------- 送进面板的因子库、信号库 ----------------
+@pytest.fixture
+def bridge_env(live_env, monkeypatch):
+    """TSP 的因子登记默认看 settings.data_dir：指到测试用的数据目录，结束后把登记进去的扩展因子清掉。"""
+    from app import config as app_config
+    from app.factors import ext_factors
+    from app.factors import registry as factor_registry
+    from app.services import ext_data
+
+    client, market = live_env
+    data_dir = market.parent.parent
+    monkeypatch.setattr(app_config.settings, "data_dir", data_dir)
+
+    def reset() -> None:
+        ext_factors._frame_cache.clear()
+        ext_factors._sync_state = None
+        ext_data._load_all_cache.clear()
+        for fid in [k for k in list(factor_registry._REGISTRY) if k.startswith(ext_factors.EXT_PREFIX)]:
+            factor_registry.unregister_factor(fid)
+
+    reset()
+    yield client, data_dir
+    reset()
+
+
+def wait_for_bridge() -> None:
+    import threading
+
+    for t in threading.enumerate():
+        if t.name == "tdx-formula-bridge":
+            t.join(timeout=30)
+
+
+WITH_VARIABLE = {"pasted": {"name": "站上均线", "formula": "M5:=MA(C,5);\nC>M5;", "params_spec": []},
+                 "enabled": True, "params": {}}
+
+
+def test_a_strategy_can_be_sent_into_the_panel_as_factors_and_signals(bridge_env):
+    import polars as pl
+
+    from app.custom.tdx_formula import bridge
+    from app.factors import ext_factors
+    from app.strategy import custom_signals
+
+    client, data_dir = bridge_env
+    sid = new_strategy(client, conditions=[WITH_VARIABLE])
+    (row,) = client.get(f"{PREFIX}/bridge").json()
+    assert row["enabled"] is False and row["fields"] == []
+
+    assert client.put(f"{PREFIX}/strategies/{sid}/bridge", json={"enabled": True}).status_code == 200
+    wait_for_bridge()
+    (row,) = client.get(f"{PREFIX}/bridge").json()
+    assert row["ok"] is True and row["through"] == str(DAYS[-1].date()) and row["days"] == len(DAYS)
+    assert [f["name"] for f in row["fields"]] == ["xg", "m5"]  # 选股结果 + 条件里用到的公式变量
+    xg, m5 = bridge.column(sid, "xg"), bridge.column(sid, "m5")
+
+    # TSP 那边：是一张按天存的扩展表，数值字段登记成了因子，可以接到行情帧上
+    last = str(DAYS[-1].date())
+    part = pl.read_parquet(data_dir / "ext_data" / row["table"] / "timeseries" / f"date={last}" / "part.parquet")
+    by = {r["symbol"]: r for r in part.to_dicts()}
+    assert by["600001.SH"]["xg"] == 1.0 and by["600002.SH"]["xg"] == 0.0  # 一路涨的选中，一路跌的没选中
+    assert by["600001.SH"]["m5"] == pytest.approx(np.round(10.0 * 1.01 ** np.arange(60), 2)[-5:].mean(), abs=1e-3)
+    assert {xg, m5} <= ext_factors.ext_factor_ids(data_dir)
+    frame = ext_factors.attach_ext_columns(
+        pl.DataFrame({"symbol": ["600001.SH", "600002.SH"], "date": [last, last]}), include_snapshot=False,
+        data_dir=data_dir)
+    assert frame[xg].to_list() == [1.0, 0.0]
+
+    # 信号库里多了一条“选中”的信号，条件就是这个字段等于 1
+    (sig,) = [s for s in custom_signals.load_all(data_dir) if s["id"] == row["signals"][0]]
+    assert sig["kind"] == "entry" and sig["conditions"][0]["left"] == xg and sig["conditions"][0]["op"] == "=="
+    custom_signals.validate(sig)
+
+    # 关掉以后，表和信号都去掉
+    assert client.put(f"{PREFIX}/strategies/{sid}/bridge", json={"enabled": False}).status_code == 200
+    assert not (data_dir / "ext_data" / row["table"]).exists()
+    assert not [s for s in custom_signals.load_all(data_dir) if s["id"].startswith(row["table"])]
+    (row,) = client.get(f"{PREFIX}/bridge").json()
+    assert row["enabled"] is False and row["fields"] == []
+
+
+def test_bridge_resends_after_new_data_or_an_edit_and_cleans_up_deleted_strategies(bridge_env, monkeypatch):
+    from app.custom.tdx_formula import bridge as bridge_module
+
+    client, data_dir = bridge_env
+    sid = new_strategy(client, conditions=[WITH_VARIABLE, ABOVE_MA])
+    client.put(f"{PREFIX}/strategies/{sid}/bridge", json={"enabled": True})
+    wait_for_bridge()
+    (row,) = client.get(f"{PREFIX}/bridge").json()
+    assert [f["name"] for f in row["fields"]] == ["xg", "c1", "c2", "m5"]  # 两个条件：各自的结果也送过去
+    assert len(row["signals"]) == 3
+
+    calls = []
+    panel = bridge_module.Bridge(lambda: None, lambda *a: None)  # 只借它的判断逻辑
+    assert panel.pending() == []  # 行情没变、策略没改：不重复送
+    client.put(f"{PREFIX}/strategies/{sid}", json={"name": "改过了"})
+    assert [s.id for s in panel.pending()] == [sid]  # 改过策略：要重新送
+    monkeypatch.setattr(bridge_module.Bridge, "export", lambda self, s, d, hooks=None, panel=None: calls.append(s.id))
+    real = bridge_module.Bridge(lambda: "panel", lambda *a: None)
+    real.tick(data_dir)
+    assert calls == [sid]
+
+    # 策略删掉以后，下一轮把它的表和信号清掉
+    assert client.delete(f"{PREFIX}/strategies/{sid}").json() == {"ok": True}
+    real.tick(data_dir)
+    assert not (data_dir / "ext_data" / row["table"]).exists() and real.enabled_ids() == []
+
+
+def test_a_strategy_without_conditions_cannot_be_sent(bridge_env):
+    client, _ = bridge_env
+    sid = new_strategy(client, conditions=[])
+    client.put(f"{PREFIX}/strategies/{sid}/bridge", json={"enabled": True})
+    wait_for_bridge()
+    (row,) = client.get(f"{PREFIX}/bridge").json()
+    assert row["ok"] is False and "没有启用任何选股条件" in row["message"]
+
+
+def test_the_generated_panel_strategy_buys_on_the_pick_and_copies_stop_and_holding_days(bridge_env):
+    import ast
+
+    from app.custom.tdx_formula import bridge
+    from app.custom.tdx_formula.ql.backtest import strategy_store
+
+    client, _ = bridge_env
+    sell = {"pasted": {"name": "跌破均线", "formula": "C<MA(C,5);", "params_spec": []}, "enabled": True, "params": {}}
+    sid = new_strategy(client, trade={**TRADE, "stop_loss": 0.08, "max_hold_days": 7, "sell_conditions": [sell]})
+    strategy = strategy_store.get_strategy(sid)
+    blank = np.zeros((1, 1), dtype=np.float32)
+    fields = [bridge.Field("xg", "选股结果", blank, "entry"), bridge.Field("sell", "卖出条件", blank, "exit")]
+    code = bridge.strategy_code(strategy, fields)
+    module = {n.targets[0].id: ast.literal_eval(n.value) for n in ast.parse(code).body
+              if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) and n.targets[0].id.isupper()
+              and n.targets[0].id != "MATRIX_STRATEGY"}
+    assert module["META"]["id"] == bridge.panel_strategy_id(sid) and module["META"]["id"].startswith("custom_")
+    assert module["ENTRY_SIGNALS"] == ["csg_" + bridge.signal_id(sid, "xg")]
+    assert module["EXIT_SIGNALS"] == ["csg_" + bridge.signal_id(sid, "sell")]
+    assert module["STOP_LOSS"] == -0.08 and module["MAX_HOLD_DAYS"] == 7
+    assert bridge.column(sid, "xg") in code and bridge.column(sid, "sell") in code
+    # 没有卖出条件时不引用卖出字段
+    plain = bridge.strategy_code(strategy, fields[:1])
+    assert bridge.column(sid, "sell") not in plain and "EXIT_SIGNALS = []" in plain
+
+
+def test_panel_side_is_asked_to_save_and_later_delete_the_generated_strategy(bridge_env):
+    from app.custom.tdx_formula import bridge
+    from app.custom.tdx_formula.ql.backtest import strategy_store
+
+    client, data_dir = bridge_env
+    sid = new_strategy(client)
+    log = []
+
+    class Spy(bridge.Hooks):
+        def after(self):
+            log.append("after")
+
+        def save_strategy(self, strategy_id, code, name, description):
+            log.append(("save", strategy_id, name))
+            return None
+
+        def delete_strategy(self, strategy_id):
+            log.append(("delete", strategy_id))
+
+    from app.custom.tdx_formula.service import FormulaService
+
+    formulas = FormulaService(data_dir / "freecn")
+    b = bridge.Bridge(formulas.panel, formulas._evaluate)
+    b.set_enabled(sid, True, data_dir, Spy())
+    state = b.export(strategy_store.get_strategy(sid), data_dir, Spy())
+    pid = bridge.panel_strategy_id(sid)
+    assert state["ok"] and state["panel_strategy"] == pid
+    assert ("save", pid, "公式·均线策略") in log and log.index("after") < log.index(("save", pid, "公式·均线策略"))
+    log.clear()
+    b.set_enabled(sid, False, data_dir, Spy())
+    assert log == [("delete", pid), "after"]

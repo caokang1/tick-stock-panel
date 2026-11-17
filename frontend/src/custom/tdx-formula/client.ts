@@ -480,6 +480,25 @@ export interface ConditionsBody {
 const BASE = '/api/custom/tdx-formula'
 const seg = encodeURIComponent
 
+/** 一个策略“送进面板”的情况：送了哪些字段、在信号库里建了哪些信号、送到哪一天 */
+export interface BridgeRow {
+  strategy_id: string
+  name: string
+  enabled: boolean
+  busy: boolean
+  table: string
+  through: string | null
+  days: number | null
+  fields: { name: string; label: string; column: string; is_signal: boolean }[]
+  signals: string[]
+  message: string | null
+  ok: boolean | null
+  updated_at: string | null
+  /** 自动生成的面板策略的编号；没有生成成时为空，原因在 panel_strategy_problem 里 */
+  panel_strategy: string | null
+  panel_strategy_problem: string | null
+}
+
 async function request<T>(endpoint: string, method = 'GET', body?: unknown, timeoutMs = 120_000): Promise<T> {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
@@ -548,6 +567,8 @@ export const tdxApi = {
   deleteStrategy: (id: string) => request<{ ok: boolean }>(`strategies/${seg(id)}`, 'DELETE'),
   startStrategy: (id: string) => request<StrategyDetail>(`strategies/${seg(id)}/start`, 'POST'),
   stopStrategy: (id: string) => request<StrategyDetail>(`strategies/${seg(id)}/stop`, 'POST'),
+  bridge: () => request<BridgeRow[]>('bridge'),
+  setBridge: (id: string, enabled: boolean) => request<BridgeRow[]>(`strategies/${seg(id)}/bridge`, 'PUT', { enabled }),
 
   /** 组合回测要十几秒到一分钟，多等一会儿 */
   backtest: (config: StrategyConfig, strategy_id?: string) =>
@@ -591,6 +612,7 @@ export const tdxKeys = {
   status: [...ROOT, 'status'] as const,
   options: [...ROOT, 'options'] as const,
   strategies: [...ROOT, 'strategies'] as const,
+  bridge: [...ROOT, 'bridge'] as const,
   strategy: (id: string) => [...ROOT, 'strategy', id] as const,
   backtest: (id: string) => [...ROOT, 'backtest', id] as const,
   today: [...ROOT, 'today'] as const,
