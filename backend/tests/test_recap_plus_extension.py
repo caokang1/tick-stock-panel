@@ -205,3 +205,6 @@ def test_holding_notices_are_cached_and_survive_a_failed_refresh(env):
     failed = notices.latest(root, held, now + timedelta(hours=2))
     assert failed["items"] == first["items"] and "HTTP 500" in failed["error"]
     assert notices.latest(root, [], now) == {"items": [], "fetched_at": None, "error": None, "codes": []}
+    # 只看近三天：3 月 14 日的留下，3 月 1 日的不要
+    assert [n["id"] for n in notices.within_days(first["items"], now, 3)] == ["AN1"]
+    assert notices.within_days(first["items"], now + timedelta(days=3), 3) == []

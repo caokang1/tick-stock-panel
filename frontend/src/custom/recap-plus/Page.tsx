@@ -6,12 +6,11 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, RefreshCw } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
 import { PageHeader } from '@/components/PageHeader'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
-import { recapApi, recapKeys, type Dashboard, type Notices, type RecapReport } from './client'
-import { isNew, latestPerDay, pct, previousClose, section, shortDate, signedYi, yi } from './logic'
+import { recapApi, recapKeys, type Dashboard, type RecapReport } from './client'
+import { latestPerDay, pct, section, shortDate, signedYi, yi } from './logic'
 import { TrendChart } from './TrendChart'
 
 const CARD = 'rounded-card border border-border bg-surface p-4'
@@ -28,91 +27,6 @@ function Kpi({ label, value, note, className = 'text-foreground' }: { label: str
       <div className={`my-0.5 text-lg font-semibold leading-tight tabular-nums ${className}`}>{value}</div>
       <div className="text-[11px] text-muted">{note}</div>
     </div>
-  )
-}
-
-const NOTICE_ROWS = 8
-
-/** 持仓公告：持仓股票最新的上市公司正式公告，点标题打开公告原文。 */
-function HoldingNotices() {
-  const client = useQueryClient()
-  const [all, setAll] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-  // 页面开着的时候每半小时自己再看一次（后端半小时内不会重复向来源请求）
-  const query = useQuery({ queryKey: recapKeys.notices, queryFn: () => recapApi.notices(), staleTime: 5 * 60_000, refetchInterval: 30 * 60_000 })
-  const data: Notices | undefined = query.data
-  const items = data?.items ?? []
-  // 上一个交易日收盘之后挂出来的算新的：周一能看到周五盘后和周末的
-  const since = previousClose(new Date())
-  const fresh = items.filter(n => isNew(n.published_at, since)).length
-  const shown = all ? items : items.slice(0, NOTICE_ROWS)
-
-  const refresh = async () => {
-    setRefreshing(true)
-    try {
-      client.setQueryData(recapKeys.notices, await recapApi.notices(true))
-    } catch {
-      await query.refetch()
-    } finally {
-      setRefreshing(false)
-    }
-  }
-
-  return (
-    <section>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="border-l-4 border-accent pl-2 text-sm font-medium text-foreground">
-          持仓公告
-          {fresh > 0 && <span className="ml-2 rounded-full bg-bull/15 px-1.5 py-0.5 text-[11px] font-medium text-bull">上个交易日收盘后 {fresh} 条</span>}
-        </h2>
-        <div className="flex items-center gap-2 text-[11px] text-muted">
-          <span>上市公司正式公告 · 来源：东方财富公告列表{data?.fetched_at ? ` · 更新于 ${data.fetched_at.replace('T', ' ').slice(5, 16)}` : ''}</span>
-          <button
-            onClick={refresh} disabled={refreshing}
-            className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-btn border border-border px-2 text-secondary transition-colors hover:bg-elevated disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3 w-3 ${refreshing ? 'animate-spin' : ''}`} />刷新
-          </button>
-        </div>
-      </div>
-      <div className={CARD}>
-        {data?.error && (
-          <p role="alert" className="mb-2 rounded-btn border border-warning/30 bg-warning/10 px-3 py-1.5 text-[11px] text-warning">
-            这次没有取到最新公告（{data.error}）{items.length > 0 ? '，下面是上次取到的。' : '。'}
-          </p>
-        )}
-        {query.isLoading ? <p className="text-xs text-muted">正在读取……</p>
-          : query.isError ? <p role="alert" className="text-xs text-danger">{(query.error as Error).message}</p>
-            : items.length === 0 ? (
-              <p className="text-xs text-muted">
-                {data?.error ? '暂时没有可显示的公告。' : '“持仓提醒”里还没有登记持仓，或者这些股票最近没有公告。'}
-              </p>
-            ) : (
-              <ul className="divide-y divide-border/50">
-                {shown.map(n => (
-                  <li key={`${n.code}:${n.id}`} className="flex items-baseline gap-3 py-1.5 text-xs">
-                    <span className="w-[86px] shrink-0 font-mono text-[11px] tabular-nums text-muted">{n.published_at.slice(5)}</span>
-                    <span className="w-16 shrink-0 truncate font-medium text-foreground" title={n.code}>{n.name}</span>
-                    <a
-                      href={n.url} target="_blank" rel="noopener noreferrer"
-                      className="group min-w-0 flex-1 text-secondary transition-colors hover:text-accent"
-                    >
-                      {isNew(n.published_at, since) && <span className="mr-1.5 rounded bg-bull/15 px-1 text-[10px] font-semibold text-bull">新</span>}
-                      {n.title}
-                      <ExternalLink className="ml-1 inline h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
-                    </a>
-                    {n.kind && <span className="hidden shrink-0 rounded bg-elevated px-1.5 py-0.5 text-[10px] text-muted md:inline">{n.kind}</span>}
-                  </li>
-                ))}
-              </ul>
-            )}
-        {items.length > NOTICE_ROWS && (
-          <button onClick={() => setAll(v => !v)} className="mt-2 cursor-pointer text-[11px] text-accent hover:underline">
-            {all ? '收起' : `展开全部 ${items.length} 条`}
-          </button>
-        )}
-      </div>
-    </section>
   )
 }
 
@@ -158,7 +72,6 @@ function Home({ data, latest }: { data: Dashboard; latest: RecapReport | undefin
         </div>
       </section>
 
-      <HoldingNotices />
 
       <section>
         <h2 className={H2}>今日主线结论</h2>

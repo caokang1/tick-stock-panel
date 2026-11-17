@@ -77,7 +77,9 @@ async function get<T>(url: string): Promise<T> {
 
 export const recapApi = {
   dashboard: () => get<Dashboard>('/api/custom/recap-plus/dashboard'),
-  notices: (refresh = false) => get<Notices>(`/api/custom/recap-plus/notices${refresh ? '?refresh=true' : ''}`),
+  /** days：只要最近几天挂出来的 */
+  notices: (refresh = false, days = 3) =>
+    get<Notices>(`/api/custom/recap-plus/notices?days=${days}${refresh ? '&refresh=true' : ''}`),
   reports: () => get<{ reports: RecapReport[] }>('/api/market-recap/reports').then(r => r.reports ?? []),
 }
 

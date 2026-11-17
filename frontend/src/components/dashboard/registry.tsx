@@ -8,7 +8,7 @@ import type { CSSProperties } from 'react'
 import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, BarChart3, BellRing, Flame, Gauge, LineChart, Link2, Sparkles, Target, TrendingUp, TrendingDown, Coins, Repeat } from 'lucide-react'
+import { ArrowUpRight, BarChart3, BellRing, FileText, Flame, Gauge, LineChart, Link2, Sparkles, Target, TrendingUp, TrendingDown, Coins, Repeat } from 'lucide-react'
 import type { AlertEvent, OverviewMarket } from '@/lib/api'
 import { fmtBigNum } from '@/lib/format'
 import type { DimensionMembersTarget } from '@/components/DimensionMembersDialog'
@@ -21,6 +21,7 @@ import {
 } from './widgets'
 import type { DashboardItem, WidgetType } from './layout'
 import { ExternalLinkWidget } from './ExternalLinkWidget'
+import { HoldingNoticesWidget } from '@/custom/recap-plus/NoticesWidget'
 
 /** 渲染上下文: 数据切片与交互回调(由 Dashboard 页提供, 组件不自取数据) */
 export interface WidgetCtx {
@@ -260,6 +261,11 @@ export const WIDGET_DEFS: WidgetDef[] = [
     render: ctx => <MonitorSection ctx={ctx} />,
   },
   {
+    // 持仓股票近三天的上市公司公告 (recap-plus 扩展提供数据); 默认放在监控中心上方
+    id: 'holding-notices', label: '持仓公告', icon: FileText, minW: 2, minH: 5, defW: 4, defH: 9,
+    render: () => <HoldingNoticesWidget />,
+  },
+  {
     id: 'ext-link', label: '外部链接', icon: Link2, minW: 2, minH: 5, defW: 6, defH: 10,
     render: (_ctx, item) => <ExternalLinkWidget title={item.p?.title ?? '外部链接'} url={item.p?.url ?? 'about:blank'} />,
   },
@@ -292,7 +298,8 @@ export const DEFAULT_LAYOUT: DashboardItem[] = [
   { i: 'ladder', t: 'ladder', x: 9, y: 4, w: 3, h: 8 },
   { i: 'concept-rank', t: 'concept-rank', x: 0, y: 12, w: 4, h: 9 },
   { i: 'industry-rank', t: 'industry-rank', x: 4, y: 12, w: 4, h: 9 },
-  { i: 'monitor', t: 'monitor', x: 8, y: 12, w: 4, h: 22 },
+  { i: 'holding-notices', t: 'holding-notices', x: 8, y: 12, w: 4, h: 9 },
+  { i: 'monitor', t: 'monitor', x: 8, y: 21, w: 4, h: 13 },
   { i: 'gainers', t: 'gainers', x: 0, y: 21, w: 2, h: 13 },
   { i: 'losers', t: 'losers', x: 2, y: 21, w: 2, h: 13 },
   { i: 'turnover', t: 'turnover', x: 4, y: 21, w: 2, h: 13 },

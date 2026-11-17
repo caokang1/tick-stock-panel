@@ -92,6 +92,12 @@ def latest(root: Path, symbols: list[str], now: datetime, force: bool = False) -
     return {**data, "error": None}
 
 
+def within_days(items: list[dict[str, Any]], now: datetime, days: int) -> list[dict[str, Any]]:
+    """只留最近 days 天（含今天）挂出来的公告。"""
+    since = (now.date() - timedelta(days=days - 1)).isoformat()
+    return [n for n in items if n["published_at"][:10] >= since]
+
+
 def recap_block(root: Path, symbols: list[str], as_of: str, now: datetime) -> list[str]:
     """给 AI 复盘用的一段：持仓最近几天的公告标题。取不到就不写这一段。"""
     result = latest(root, symbols, now)
