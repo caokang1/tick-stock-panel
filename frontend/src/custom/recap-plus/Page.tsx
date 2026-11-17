@@ -165,8 +165,8 @@ function Archive({ reports }: { reports: RecapReport[] }) {
 
 export function DailyReview() {
   const [tab, setTab] = useState<'home' | 'archive'>('home')
-  const dashboard = useQuery({ queryKey: recapKeys.dashboard, queryFn: recapApi.dashboard, staleTime: 60_000 })
-  const reports = useQuery({ queryKey: recapKeys.reports, queryFn: recapApi.reports, staleTime: 60_000 })
+  const dashboard = useQuery({ queryKey: recapKeys.dashboard, queryFn: recapApi.dashboard, staleTime: 0, refetchOnMount: 'always' })
+  const reports = useQuery({ queryKey: recapKeys.reports, queryFn: recapApi.reports, staleTime: 0, refetchOnMount: 'always' })
   const archive = latestPerDay(reports.data ?? [])
   const data = dashboard.data
 
