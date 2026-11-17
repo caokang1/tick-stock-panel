@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import weakref
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -19,15 +22,22 @@ from app.custom.tdx_formula.ql.tdx.ast import (
     String,
     Unary,
 )
-from app.custom.tdx_formula.ql.tdx.funcs import as_bool, as_float
+from app.custom.tdx_formula.ql.tdx.funcs import as_bool, as_float, chip_pass
 from app.custom.tdx_formula.ql.tdx.inspect import (
     DEFAULT_BOOL_NAMES,
     is_boolean_expr,
     is_drawing_statement,
+    live_statements,
     output_labels,
+    render_expr,
     walk,
 )
-from app.custom.tdx_formula.ql.tdx.registry import BUILTIN_SERIES, FUNCTIONS
+from app.custom.tdx_formula.ql.tdx.registry import (
+    BUILTIN_SERIES,
+    CHIP_FUNCTIONS,
+    DATE_SERIES,
+    FUNCTIONS,
+)
 from app.custom.tdx_formula.ql.tdx.special import (
     LOOKAHEAD_FUNCS,
     MSG_DRAWING_ONLY,
@@ -67,10 +77,12 @@ def analyze(program: Program) -> Analysis:
     pool_variables: list[str] = []
     drawing_count = 0
 
+    live = live_statements(program)
     for stmt in program.statements:
         drawing = is_drawing_statement(stmt)
         uses_pool = False
-        for node in walk(stmt.expr):
+        # 不参与任何输出的语句（只给画图用的中间变量等）不求值，里面写了什么都不影响结果，也就不检查
+        for node in walk(stmt.expr) if (drawing or stmt.index in live) else ():
             if isinstance(node, Call):
                 key = node.key
                 functions.add(key)
@@ -137,6 +149,29 @@ def ensure_evaluable(program: Program) -> Analysis:
     return analysis
 
 
+# 筹码函数的结果很贵（全市场要算十几秒），而同一份行情上常常反复用到同样的几个
+# （一条公式拆成几个条件、统计和列表各算一次）。这里留最近几个结果，按“行情对象 + 写法”认。
+_CHIP_CACHE_SIZE = 6
+_chip_cache: OrderedDict[tuple[int, str, str], tuple[weakref.ref[Panel], np.ndarray]] = OrderedDict()
+_chip_lock = threading.Lock()
+
+
+def _chip_cached(panel: Panel, mode: str, text: str) -> np.ndarray | None:
+    with _chip_lock:
+        hit = _chip_cache.get((id(panel), mode, text))
+        if hit is None or hit[0]() is not panel:  # 同一个编号但行情对象已经换了：不算命中
+            return None
+        _chip_cache.move_to_end((id(panel), mode, text))
+        return hit[1]
+
+
+def _chip_store(panel: Panel, mode: str, text: str, value: np.ndarray) -> None:
+    with _chip_lock:
+        _chip_cache[(id(panel), mode, text)] = (weakref.ref(panel), value.astype(np.float32))
+        while len(_chip_cache) > _CHIP_CACHE_SIZE:
+            _chip_cache.popitem(last=False)
+
+
 class _Evaluator:
     def __init__(
         self,
@@ -148,6 +183,7 @@ class _Evaluator:
         self._shape = panel.shape
         self._env: dict[str, np.ndarray] = {}
         self._ignored: set[str] = set()  # 画图语句的名字
+        self._chips: dict[tuple[str, str], np.ndarray] = {}  # 已经算好的筹码函数：(函数名, 参数写法) → 结果
         self._params = {k.upper(): float(v) for k, v in (params or {}).items()}
         self._extra: dict[str, np.ndarray] = {}
         for name, series in (extra_series or {}).items():
@@ -158,7 +194,9 @@ class _Evaluator:
 
     def run(self, program: Program) -> dict[str, np.ndarray]:
         labels = output_labels(program)
+        live = live_statements(program)
         tradable = self._panel.tradable
+        self._prepare_chips(program, live)
         result: dict[str, np.ndarray] = {}
         for stmt in program.statements:
             if is_drawing_statement(stmt):
@@ -166,6 +204,8 @@ class _Evaluator:
                     self._ignored.add(stmt.key)
                     self._env.pop(stmt.key, None)
                 continue
+            if stmt.index not in live:
+                continue  # 不参与任何输出，不用算
             value = self._eval(stmt.expr)
             if stmt.key is not None:
                 self._env[stmt.key] = value
@@ -177,6 +217,51 @@ class _Evaluator:
                 else:
                     result[labels[stmt.index]] = np.array(full, dtype=np.float64)
         return result
+
+    def _chip_key(self, node: Call) -> tuple[str, str]:
+        """认一个筹码函数调用用的键：函数名 + 参数的写法；参数里用到的命名参数连同取值一起算进去。"""
+        arg = node.args[0]
+        used = sorted({n.key for n in walk(arg) if isinstance(n, Ident) and n.key in self._params})
+        values = "".join(f"|{name}={self._params[name]!r}" for name in used)
+        return node.key, render_expr(arg) + values
+
+    def _prepare_chips(self, program: Program, live: frozenset[int]) -> None:
+        """把公式里能提前算的筹码函数合在一趟里算好。
+
+        “能提前算”指参数只用到行情本身（收盘价、数字、参数等），不依赖公式里定义的变量，
+        比如 WINNER(CLOSE)、WINNER(CLOSE*1.1)。其余的留到用到时单独算。
+        """
+        defined = {stmt.key for stmt in program.statements if stmt.key is not None}
+        wanted: dict[tuple[str, str], Expr] = {}
+        for stmt in program.statements:
+            if stmt.index not in live:
+                continue
+            for node in walk(stmt.expr):
+                if not (isinstance(node, Call) and node.key in CHIP_FUNCTIONS and len(node.args) == 1):
+                    continue
+                inner = list(walk(node.args[0]))
+                if any(isinstance(n, Ident) and n.key in defined for n in inner):
+                    continue
+                if any(isinstance(n, Call) and n.key in CHIP_FUNCTIONS for n in inner):
+                    continue
+                wanted[self._chip_key(node)] = node.args[0]
+        todo: list[tuple[tuple[str, str], np.ndarray]] = []
+        for key, arg in wanted.items():
+            cached = _chip_cached(self._panel, CHIP_FUNCTIONS[key[0]], key[1])
+            if cached is not None:
+                self._chips[key] = cached
+                continue
+            try:
+                todo.append((key, self._eval(arg)))
+            except FormulaError:
+                continue  # 参数本身有问题：留给正常求值时报错（带行号）
+        if not todo:
+            return
+        panel = self._panel
+        results = chip_pass(panel.high, panel.low, panel.turnover, [(CHIP_FUNCTIONS[k[0]], q) for k, q in todo])
+        for (key, _), value in zip(todo, results, strict=True):
+            self._chips[key] = value
+            _chip_store(panel, CHIP_FUNCTIONS[key[0]], key[1], value)
 
     def _eval(self, node: Expr) -> np.ndarray:
         if isinstance(node, Number):
@@ -206,6 +291,8 @@ class _Evaluator:
             return self._extra[key]
         if key in BUILTIN_SERIES:
             return np.asarray(getattr(self._panel, BUILTIN_SERIES[key]))
+        if key in DATE_SERIES:
+            return self._date_series(key)
         if key in self._ignored:
             raise FormulaError(
                 f"第 {node.line} 行用到了“{node.name}”，但它是一条画图语句，没有可以计算的结果。",
@@ -215,6 +302,24 @@ class _Evaluator:
             f"第 {node.line} 行用到了没有定义的名字“{node.name}”。请检查是否写错，或者它的定义是否写在了后面。",
             kind="syntax", names=[node.name], line=node.line,
         )  # fmt: skip
+
+    def _date_series(self, key: str) -> np.ndarray:
+        """DATE（通达信写法：(年-1900)*10000+月*100+日）、YEAR、MONTH、DAY、WEEKDAY（周一到周日为 1 到 7）。"""
+        days = self._panel.dates.astype("datetime64[D]")
+        years = days.astype("datetime64[Y]").astype(int) + 1970
+        months = days.astype("datetime64[M]").astype(int) % 12 + 1
+        dom = (days - days.astype("datetime64[M]")).astype(int) + 1
+        if key == "YEAR":
+            column = years
+        elif key == "MONTH":
+            column = months
+        elif key == "DAY":
+            column = dom
+        elif key == "WEEKDAY":
+            column = (days.astype(int) + 3) % 7 + 1  # 1970-01-01 是周四
+        else:
+            column = (years - 1900) * 10000 + months * 100 + dom
+        return np.broadcast_to(column.astype(np.float64)[:, None], self._shape)
 
     def _binary(self, node: BinOp) -> np.ndarray:
         left, right = self._eval(node.left), self._eval(node.right)
@@ -250,6 +355,10 @@ class _Evaluator:
 
     def _call(self, node: Call) -> np.ndarray:
         spec = FUNCTIONS[node.key]  # ensure_evaluable 已保证函数存在
+        if node.key in CHIP_FUNCTIONS and len(node.args) == 1:
+            ready = self._chips.get(self._chip_key(node))
+            if ready is not None:
+                return np.asarray(ready, dtype=np.float64)
         if len(node.args) != len(spec.args):
             raise FormulaError(
                 f"第 {node.line} 行写法有误：函数 {node.key} 要 {len(spec.args)} 个参数，这里写了 {len(node.args)} 个",
@@ -261,6 +370,8 @@ class _Evaluator:
             if kind == "s" and value.ndim == 0:
                 value = np.broadcast_to(value, self._shape)
             args.append(value)
+        if spec.panel_fn:
+            args.insert(0, self._panel)
         try:
             return np.asarray(spec.fn(*args))
         except FormulaError as err:

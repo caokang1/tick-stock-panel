@@ -966,3 +966,114 @@ def test_data_ready_time_can_be_set_to_the_minute(monkeypatch):
     raw["download"]["data_ready_minute"] = 60
     with pytest.raises(data_config.ConfigError):
         data_config.parse(raw)
+
+
+# ---------------- 成批补上的公式函数、筹码分布、只检查参与结果的语句 ----------------
+
+
+def _tiny_panel(close, high=None, low=None, volume=None, float_shares=None, start="2024-03-11"):
+    from app.custom.tdx_formula.ql.core.panel import Panel
+
+    close = np.asarray(close, dtype=float)
+    t, n = close.shape
+    flags = np.zeros((t, n), dtype=bool)
+    high = close if high is None else np.asarray(high, dtype=float)
+    low = close if low is None else np.asarray(low, dtype=float)
+    volume = np.full((t, n), 100.0) if volume is None else np.asarray(volume, dtype=float)
+    return Panel(
+        dates=np.arange(np.datetime64(start), np.datetime64(start) + t), codes=np.array([f"sh.60000{i}" for i in range(n)]),
+        open=close, high=high, low=low, close=close, volume=volume, amount=close * volume,
+        raw_open=close, raw_high=high, raw_low=low, raw_close=close, raw_preclose=close,
+        listed=np.isfinite(close), suspended=flags, is_st=flags.copy(),
+        float_shares=np.full((t, n), 1000.0) if float_shares is None else np.asarray(float_shares, dtype=float),
+    )
+
+
+def test_batch_of_added_formula_functions():
+    from app.custom.tdx_formula.ql.tdx import funcs as f
+
+    x = np.array([[1.0], [3.0], [2.0], [5.0], [4.0], [np.nan], [6.0]])
+    cond = np.array([[0], [1], [1], [0], [1], [1], [1]], dtype=bool)
+    assert f.BARSLASTCOUNT(cond)[:, 0].tolist() == [0, 1, 2, 0, 1, 2, 3]
+    assert f.BARSSINCE(cond)[1:, 0].tolist() == [0, 1, 2, 3, 4, 5] and np.isnan(f.BARSSINCE(cond)[0, 0])
+    assert f.BARSCOUNT(x)[:, 0].tolist() == [1, 2, 3, 4, 5, 6, 7]
+    hit = np.array([[0], [1], [0], [0], [1], [0], [0]], dtype=bool)
+    assert f.VALUEWHEN(hit, x)[1:, 0].tolist() == [3, 3, 3, 4, 4, 4]
+    assert f.SUMBARS(np.ones((6, 1)), 3.0)[2:, 0].tolist() == [3, 3, 3, 3] and np.isnan(f.SUMBARS(np.ones((6, 1)), 3.0)[1, 0])
+    assert f.EXISTR(np.array([[1], [0], [0], [0], [0]], dtype=bool), 3, 1)[:, 0].tolist() == [False, True, True, True, False]
+
+    squares = np.arange(1.0, 8.0).reshape(-1, 1) ** 2
+    assert f.VARP(squares, 3)[-1, 0] == pytest.approx(np.var([25, 36, 49]))
+    assert f.VAR(squares, 3)[-1, 0] == pytest.approx(np.var([25, 36, 49], ddof=1))
+    assert f.STDP(squares, 3)[-1, 0] == pytest.approx(np.std([25, 36, 49]))
+    assert f.DEVSQ(squares, 3)[-1, 0] == pytest.approx(np.var([25, 36, 49]) * 3)
+    line = np.arange(1.0, 8.0).reshape(-1, 1) * 2 + 1  # 一条直线：回归线在当前这一根上的值就是它自己
+    assert f.FORCAST(line, 4)[3:, 0].tolist() == pytest.approx([9, 11, 13, 15])
+    assert f.MEMA(line, 3)[:, 0].tolist() == pytest.approx(f.SMA(line, 3, 1)[:, 0].tolist())
+    assert f.SIGN(np.array([-2.0, 0.0, 3.0])).tolist() == [-1, 0, 1]
+    assert f.FRACPART(np.array([2.75, -2.75])).tolist() == [0.75, -0.75]
+    assert f.CEILING(np.array([1.2])).tolist() == [2] and f.FLOOR(np.array([1.8])).tolist() == [1]
+    assert f.IFN(np.array([True, False]), 1.0, 2.0).tolist() == [2, 1]
+
+
+def test_date_series_follow_the_trading_days():
+    from app.custom.tdx_formula.ql.tdx.evaluator import evaluate
+    from app.custom.tdx_formula.ql.tdx.parser import parse
+
+    panel = _tiny_panel(np.full((3, 1), 10.0), start="2024-03-15")  # 周五、周六、周日
+    out = evaluate(parse("A:DATE;\nB:YEAR;\nC1:MONTH;\nD:DAY;\nE:WEEKDAY;"), panel)
+    assert out["A"][:, 0].tolist() == [1240315, 1240316, 1240317]
+    assert (out["B"][0, 0], out["C1"][0, 0], out["D"][:, 0].tolist()) == (2024, 3, [15, 16, 17])
+    assert out["E"][:, 0].tolist() == [5, 6, 7]
+
+
+def test_chip_distribution_estimates_winner_and_cost():
+    from app.custom.tdx_formula.ql.tdx import funcs as f
+
+    # 第一只每天全部换手（筹码永远是当天的），第二只每天换手一半
+    price = np.array([[10.0, 10.0], [20.0, 10.0], [20.0, 20.0]])
+    turnover = np.array([[100.0, 50.0]] * 3)
+    winner, cost = f.chip_pass(price, price, turnover, [("winner", np.full((3, 2), 15.0)), ("cost", 50.0)])
+    assert winner.round(3).tolist() == [[1.0, 1.0], [0.0, 1.0], [0.0, 0.5]]
+    assert cost[:, 0].tolist() == pytest.approx([10.0, 20.0, 20.0], rel=0.01)
+    # 停牌或没有换手率的日子筹码不变；还没有筹码时是 NaN
+    gap = np.array([[np.nan], [10.0], [np.nan], [12.0]])
+    held = f.chip_distribution(gap, gap, np.array([[1.0], [1.0], [np.nan], [50.0]]), 11.0, "winner")[:, 0]
+    assert np.isnan(held[0]) and held[1:].tolist() == [1.0, 1.0, 0.5]
+
+
+def test_winner_calls_in_one_formula_share_a_single_pass(monkeypatch):
+    from app.custom.tdx_formula.ql.tdx import evaluator
+    from app.custom.tdx_formula.ql.tdx.parser import parse
+
+    calls: list[int] = []
+    real = evaluator.chip_pass
+    monkeypatch.setattr(evaluator, "chip_pass", lambda *args: calls.append(len(args[3])) or real(*args))
+    close = np.array([[10.0], [11.0], [12.0], [11.0]])
+    panel = _tiny_panel(close, high=close * 1.02, low=close * 0.98, volume=np.full((4, 1), 300.0))  # 每天换手 30%
+    program = parse("A:=WINNER(CLOSE);\nB:=WINNER(CLOSE*1.1)-WINNER(CLOSE*0.9);\nXG:A>0.5 AND B>0;")
+    first = evaluator.evaluate(program, panel)["XG"]
+    assert calls == [3]  # 三个筹码函数一趟算完
+    assert evaluator.evaluate(program, panel)["XG"].tolist() == first.tolist() and calls == [3]  # 同一份行情再算：用留着的结果
+    evaluator.evaluate(program, _tiny_panel(close, high=close * 1.02, low=close * 0.98))
+    assert calls == [3, 3]  # 换了一份行情就重新算
+
+
+def test_statements_that_feed_no_output_are_not_checked_or_evaluated():
+    from app.custom.tdx_formula.ql.core.errors import FormulaError
+    from app.custom.tdx_formula.ql.tdx.evaluator import analyze, evaluate
+    from app.custom.tdx_formula.ql.tdx.parser import parse
+
+    panel = _tiny_panel(np.array([[10.0], [11.0], [12.0]]))
+    # T1 只给画图语句用：里面的 CONST（会用到之后的数据）和没见过的函数都不影响结果
+    text = "A:=C>REF(C,1);\nT1:=CONST(A) AND 没见过的函数(C);\nDRAWTEXT_FIX(T1,0.5,0.5,0,'提示');\nXG:A;"
+    analysis = analyze(parse(text))
+    assert analysis.lookahead == () and analysis.unsupported == ()
+    assert evaluate(parse(text), panel)["XG"][:, 0].tolist() == [False, True, True]
+    # 真正用在结果里的照样拦
+    with pytest.raises(FormulaError) as caught:
+        evaluate(parse("T1:=CONST(C);\nXG:C>T1;"), panel)
+    assert caught.value.kind == "lookahead"
+    with pytest.raises(FormulaError) as caught:
+        evaluate(parse("T1:=没见过的函数(C);\nXG:C>T1;"), panel)
+    assert caught.value.kind == "unsupported"

@@ -575,3 +575,278 @@ def MOD(a: Any, b: Any) -> Array:
     fa, fb = _f(a), _f(b)
     with np.errstate(all="ignore"):
         return np.fmod(fa, np.where(fb == 0, np.nan, fb))
+
+
+# ---------------------------------------------------------------- 数学（补充）
+
+
+def EXP(x: Any) -> Array:
+    with np.errstate(all="ignore"):
+        return np.exp(_f(x))
+
+
+def SIN(x: Any) -> Array:
+    return np.sin(_f(x))
+
+
+def COS(x: Any) -> Array:
+    return np.cos(_f(x))
+
+
+def TAN(x: Any) -> Array:
+    return np.tan(_f(x))
+
+
+def ASIN(x: Any) -> Array:
+    with np.errstate(all="ignore"):
+        return np.arcsin(_f(x))
+
+
+def ACOS(x: Any) -> Array:
+    with np.errstate(all="ignore"):
+        return np.arccos(_f(x))
+
+
+def ATAN(x: Any) -> Array:
+    return np.arctan(_f(x))
+
+
+def CEILING(x: Any) -> Array:
+    return np.ceil(_f(x))
+
+
+def FLOOR(x: Any) -> Array:
+    return np.floor(_f(x))
+
+
+def SIGN(x: Any) -> Array:
+    """正数 1、负数 -1、零 0。"""
+    return np.sign(_f(x))
+
+
+def FRACPART(x: Any) -> Array:
+    """小数部分（和 INTPART 相对，符号跟着原数）。"""
+    v = _f(x)
+    return v - np.trunc(v)
+
+
+def REVERSE(x: Any) -> Array:
+    """相反数。"""
+    return -_f(x)
+
+
+def IFN(cond: Any, a: Any, b: Any) -> Array:
+    """条件不成立取 a，否则取 b（和 IF 相反）。"""
+    return IF(cond, b, a)
+
+
+# ---------------------------------------------------------------- 均线、统计（补充）
+
+
+def MEMA(x: Any, n: Period) -> Array:
+    """平滑移动平均：y[t] = (x[t] + (n-1)*y[t-1]) / n，即 SMA(x, n, 1)。"""
+    return SMA(x, n, 1)
+
+
+def _moments(x: Any, n: Period, name: str) -> tuple[Array, Array, int, Array]:
+    """最近 n 根的 (Σd, Σd², n, x)，d 是减去每列第一个有效值之后的数（减小大数相减的误差）。"""
+    x = _f(x)
+    n = _period(n, name, 1)
+    nan = np.isnan(x)
+    first = np.take_along_axis(x, np.argmax(~nan, axis=0)[None, ...], axis=0)
+    d = x - first
+    return SUM(d, n), SUM(d * d, n), n, x
+
+
+def DEVSQ(x: Any, n: Period) -> Array:
+    """最近 n 根的偏差平方和。"""
+    s1, s2, n, _ = _moments(x, n, "DEVSQ")
+    return np.maximum(s2 - s1 * s1 / n, 0.0)
+
+
+def VARP(x: Any, n: Period) -> Array:
+    """总体方差（除以 n）。"""
+    s1, s2, n, _ = _moments(x, n, "VARP")
+    return np.maximum(s2 - s1 * s1 / n, 0.0) / n
+
+
+def VAR(x: Any, n: Period) -> Array:
+    """估算方差（除以 n-1）。"""
+    s1, s2, n, x = _moments(x, n, "VAR")
+    if n < 2:
+        return np.full(x.shape, np.nan)
+    return np.maximum(s2 - s1 * s1 / n, 0.0) / (n - 1)
+
+
+def STDP(x: Any, n: Period) -> Array:
+    """总体标准差（除以 n）。"""
+    return np.sqrt(VARP(x, n))
+
+
+def FORCAST(x: Any, n: Period) -> Array:
+    """最近 n 根做线性回归，回归线在当前这一根上的值。"""
+    n = _period(n, "FORCAST", 1)
+    if n < 2:
+        return _f(x).copy()
+    slope = SLOPE(x, n)
+    return MA(x, n) + slope * (n - 1) / 2.0
+
+
+# ---------------------------------------------------------------- K 线计数（补充）
+
+
+def BARSCOUNT(x: Any) -> Array:
+    """从第一根有效数据到现在的根数（第一根为 1）；还没有有效数据时为 NaN。"""
+    valid = ~np.isnan(_f(x))
+    seen = np.logical_or.accumulate(valid, axis=0)
+    first = np.argmax(seen, axis=0)[None, ...]
+    return np.where(seen, _rows(valid) - first + 1.0, np.nan)
+
+
+def BARSSINCE(cond: Any) -> Array:
+    """第一次条件成立到现在的根数，成立当天为 0；还没成立过为 NaN。"""
+    c = _b(cond)
+    seen = np.logical_or.accumulate(c, axis=0)
+    first = np.argmax(seen, axis=0)[None, ...]
+    return np.where(seen, (_rows(c) - first).astype(np.float64), np.nan)
+
+
+def BARSLASTCOUNT(cond: Any) -> Array:
+    """到当前为止条件连续成立了多少根；当前不成立为 0。"""
+    c = _b(cond)
+    rows = _rows(c)
+    last_false = np.maximum.accumulate(np.where(c, -1, rows), axis=0)
+    return (rows - last_false).astype(np.float64)
+
+
+def VALUEWHEN(cond: Any, x: Any) -> Array:
+    """最近一次条件成立时 x 的值；还没成立过为 NaN。"""
+    c = _b(cond)
+    x = np.broadcast_to(_f(x), c.shape)
+    rows = _rows(c)
+    last = np.maximum.accumulate(np.where(c, rows, -1), axis=0)
+    picked = np.take_along_axis(x, np.maximum(last, 0), axis=0)
+    return np.where(last < 0, np.nan, picked)
+
+
+def SUMBARS(x: Any, a: Any) -> Array:
+    """往前累加 x，加到不小于 a 需要多少根；全部加完也不够时为 NaN（通达信此时取已有的根数）。"""
+    x = _f(x)
+    target = np.broadcast_to(_f(a), x.shape)
+    cs = np.cumsum(np.where(np.isnan(x), 0.0, x), axis=0)
+    pad = np.zeros((1, *x.shape[1:]))
+    before = np.concatenate([pad, cs[:-1]], axis=0)  # before[t] = 第 t 根之前的累计
+    out = np.full(x.shape, np.nan)
+    # 要找最大的 s 使 cs[t] - before[s] >= a，即 before[s] <= cs[t] - a；before 对非负的 x 单调不减，按列二分
+    flat_before = before.reshape(len(x), -1)
+    flat_need = (cs - target).reshape(len(x), -1)
+    flat_out = out.reshape(len(x), -1)
+    for col in range(flat_before.shape[1]):
+        b = flat_before[:, col]
+        if np.any(np.diff(b) < 0):
+            continue  # x 里有负数时累计不单调，这一列不算
+        pos = np.searchsorted(b, flat_need[:, col], side="right") - 1
+        t = np.arange(len(x))
+        ok = (pos >= 0) & (pos <= t) & ~np.isnan(flat_need[:, col])
+        flat_out[ok, col] = (t - pos + 1)[ok]
+    return flat_out.reshape(x.shape)
+
+
+def EXISTR(cond: Any, a: Period, b: Period) -> Array:
+    """从 a 根前到 b 根前条件成立过。"""
+    c = _b(cond)
+    a = _period(a, "EXISTR")
+    b = _period(b, "EXISTR")
+    if a < b:
+        raise FormulaError(f"EXISTR 的第 2 个参数（{a}）不能小于第 3 个参数（{b}）", kind="syntax")
+    return _shift(COUNT(c, a - b + 1) > 0, b, False)
+
+
+# ---------------------------------------------------------------- 筹码分布（估算）
+
+
+CHIP_BINS = 160
+
+
+def chip_distribution(high: Any, low: Any, turnover_pct: Any, query: Any, mode: str) -> Array:
+    """按换手率估算筹码分布，并回答一个问题。详见 chip_pass。"""
+    return chip_pass(high, low, turnover_pct, [(mode, query)])[0]
+
+
+def chip_pass(high: Any, low: Any, turnover_pct: Any, requests: list[tuple[str, Any]]) -> list[Array]:
+    """按换手率估算筹码分布，一趟算完若干个问题（筹码的演变只算一遍，所以一次问几个比分开问快得多）。
+
+    每个问题是 (mode, query)：
+    mode="winner"：query 是价格，结果是这个价位以下的筹码占比（0 到 1），即获利盘比例。
+    mode="cost"：query 是百分比（0 到 100），结果是“这么多比例的筹码成本在它以下”的那个价位。
+
+    估算方法（公开的通行做法，通达信自己的算法没有公开，数值会有出入）：
+    每天换手的那部分筹码，按当天最低到最高价均匀铺开；原来的筹码按 (1 - 换手率) 留下。
+    没有换手率或没有行情的日子（停牌、未上市、流通股本未知）筹码不变；还没有任何筹码时结果为 NaN。
+    每只股票用它自己历史上的最低到最高价划成等比的价格格子来记筹码，格子有粗细，结果是近似值。
+    """
+    high, low = _f(high), _f(low)
+    shape = high.shape
+    hi2, lo2 = high.reshape(len(high), -1), low.reshape(len(low), -1)
+    rate = np.clip(np.broadcast_to(_f(turnover_pct), shape).reshape(hi2.shape) / 100.0, 0.0, 1.0)
+    asks = [(mode, np.broadcast_to(_f(query), shape).reshape(hi2.shape)) for mode, query in requests]
+    t_count, n = hi2.shape
+    with np.errstate(all="ignore"):
+        floor = np.log(np.nanmin(np.where(lo2 > 0, lo2, np.nan), axis=0)) - 0.02
+        ceil = np.log(np.nanmax(np.where(hi2 > 0, hi2, np.nan), axis=0)) + 0.02
+        width = np.where(np.isfinite(ceil - floor) & (ceil > floor), (ceil - floor) / CHIP_BINS, 1.0)
+        floor = np.where(np.isfinite(floor), floor, 0.0)
+        # 每天的最低、最高价各落在第几个格子上（带小数），一次算好
+        pos_lo = ((np.log(lo2) - floor) / width).astype(np.float32)
+        pos_hi = np.maximum(((np.log(hi2) - floor) / width).astype(np.float32), pos_lo + 1e-3)
+        trade = np.isfinite(pos_lo) & np.isfinite(pos_hi) & np.isfinite(rate) & (rate > 0)
+        pos_q = [((np.log(np.maximum(q, 1e-12)) - floor) / width).astype(np.float32) if mode == "winner" else None
+                 for mode, q in asks]
+    bins = np.arange(CHIP_BINS, dtype=np.float32)[None, :]
+    chips = np.zeros((n, CHIP_BINS), dtype=np.float32)
+    has = np.zeros(n, dtype=bool)
+    outs = [np.full(hi2.shape, np.nan) for _ in asks]
+    buf_a = np.empty((n, CHIP_BINS), dtype=np.float32)
+    buf_b = np.empty((n, CHIP_BINS), dtype=np.float32)
+    rows = np.arange(n)
+
+    for t in range(t_count):
+        active = trade[t]
+        if active.any():
+            # 当天成交的筹码在各个格子里的份额：[最低, 最高] 均匀铺开。没成交的股票份额全为 0
+            pl = np.where(active, pos_lo[t], 0.0).astype(np.float32)
+            ph = np.where(active, pos_hi[t], 1.0).astype(np.float32)
+            np.subtract(ph[:, None], bins, out=buf_a)
+            np.clip(buf_a, 0.0, 1.0, out=buf_a)
+            np.subtract(pl[:, None], bins, out=buf_b)
+            np.clip(buf_b, 0.0, 1.0, out=buf_b)
+            buf_a -= buf_b
+            r = rate[t]
+            add = np.where(active, np.where(has, r, 1.0), 0.0) / (ph - pl)  # 第一天：全部筹码都是当天的
+            keep = np.where(active, np.where(has, 1.0 - r, 0.0), 1.0)
+            buf_a *= add.astype(np.float32)[:, None]
+            chips *= keep.astype(np.float32)[:, None]
+            chips += buf_a
+            has |= active
+        if not has.any():
+            continue
+        cum = np.cumsum(chips, axis=1, out=buf_b)  # 每个格子及以下的筹码合计；各个问题都从它上面取数
+        for (mode, q), pos, out in zip(asks, pos_q, outs, strict=True):
+            ok = has & np.isfinite(q[t])
+            if not ok.any():
+                continue
+            if mode == "winner":
+                # 价位落在第 k 个格子的 frac 处：下面的格子全算，这个格子按比例算
+                p = np.where(ok, pos[t], 0.0)
+                k = np.clip(np.floor(p), 0, CHIP_BINS - 1).astype(np.int64)
+                frac = np.clip(p - k, 0.0, 1.0)
+                below = np.where(k > 0, cum[rows, np.maximum(k - 1, 0)], 0.0)
+                out[t] = np.where(ok, np.clip(below + chips[rows, k] * frac, 0.0, 1.0), np.nan)
+            else:
+                target = np.clip(np.where(ok, q[t], 0.0) / 100.0, 0.0, 1.0) * cum[:, -1]
+                k = np.minimum((cum < target[:, None]).sum(axis=1), CHIP_BINS - 1)  # 第一个累计达到目标的格子
+                before = np.where(k > 0, cum[rows, np.maximum(k - 1, 0)], 0.0)
+                inside = chips[rows, k]
+                frac = np.where(inside > 0, (target - before) / np.where(inside > 0, inside, 1.0), 0.0)
+                out[t] = np.where(ok, np.exp(floor + (k + np.clip(frac, 0.0, 1.0)) * width), np.nan)
+    return [out.reshape(shape) for out in outs]

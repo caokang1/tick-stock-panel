@@ -14,6 +14,7 @@ class FuncSpec:
     fn: Callable[..., Any]
     args: str  # 每个参数一个字符："s" 序列，"e" 逐格计算（数字或序列），"p" 周期类参数
     returns_bool: bool = False
+    panel_fn: bool = False  # 实现需要行情本身（如筹码分布要最高价、最低价、换手率）：第一个参数传 Panel
 
     @property
     def period_positions(self) -> tuple[int, ...]:
@@ -61,7 +62,46 @@ FUNCTIONS: dict[str, FuncSpec] = {
     "ROUND": FuncSpec(f.ROUND, "e"),
     "INTPART": FuncSpec(f.INTPART, "e"),
     "MOD": FuncSpec(f.MOD, "ee"),
+    # —— 下面是后来成批补上的 ——
+    "EXP": FuncSpec(f.EXP, "e"),
+    "SIN": FuncSpec(f.SIN, "e"),
+    "COS": FuncSpec(f.COS, "e"),
+    "TAN": FuncSpec(f.TAN, "e"),
+    "ASIN": FuncSpec(f.ASIN, "e"),
+    "ACOS": FuncSpec(f.ACOS, "e"),
+    "ATAN": FuncSpec(f.ATAN, "e"),
+    "CEILING": FuncSpec(f.CEILING, "e"),
+    "FLOOR": FuncSpec(f.FLOOR, "e"),
+    "SIGN": FuncSpec(f.SIGN, "e"),
+    "SGN": FuncSpec(f.SIGN, "e"),
+    "FRACPART": FuncSpec(f.FRACPART, "e"),
+    "REVERSE": FuncSpec(f.REVERSE, "e"),
+    "IFF": FuncSpec(f.IF, "eee"),
+    "IFN": FuncSpec(f.IFN, "eee"),
+    "REFV": FuncSpec(f.REF, "sp"),
+    "EXPMA": FuncSpec(f.EMA, "sp"),
+    "EXPMEMA": FuncSpec(f.EMA, "sp"),  # 通达信里它和 EMA 只在最开始几根的算法上不同
+    "MEMA": FuncSpec(f.MEMA, "sp"),
+    "STDP": FuncSpec(f.STDP, "sp"),
+    "VAR": FuncSpec(f.VAR, "sp"),
+    "VARP": FuncSpec(f.VARP, "sp"),
+    "DEVSQ": FuncSpec(f.DEVSQ, "sp"),
+    "FORCAST": FuncSpec(f.FORCAST, "sp"),
+    "BARSCOUNT": FuncSpec(f.BARSCOUNT, "s"),
+    "BARSSINCE": FuncSpec(f.BARSSINCE, "s"),
+    "BARSLASTCOUNT": FuncSpec(f.BARSLASTCOUNT, "s"),
+    "VALUEWHEN": FuncSpec(f.VALUEWHEN, "ss"),
+    "SUMBARS": FuncSpec(f.SUMBARS, "se"),
+    "EXISTR": FuncSpec(f.EXISTR, "spp", True),
+    # 筹码分布（按换手率估算，和通达信的数值会有出入）
+    "WINNER": FuncSpec(lambda panel, price: f.chip_distribution(panel.high, panel.low, panel.turnover, price, "winner"),
+                       "e", panel_fn=True),
+    "COST": FuncSpec(lambda panel, percent: f.chip_distribution(panel.high, panel.low, panel.turnover, percent, "cost"),
+                     "e", panel_fn=True),
 }
+
+# 筹码函数 → chip_pass 里的问题类型。它们算起来慢，求值器会把同一条公式里的几个合在一趟里算
+CHIP_FUNCTIONS: dict[str, str] = {"WINNER": "winner", "COST": "cost"}
 
 # 内置序列名 → Panel 的字段
 BUILTIN_SERIES: dict[str, str] = {
@@ -75,3 +115,6 @@ BUILTIN_SERIES: dict[str, str] = {
     # 流通股本还没有补下载的日子是 NaN，和它比较的条件在那些日子不成立。
     "CAPITAL": "float_shares", "LTSZ": "float_cap", "HSL": "turnover",
 }  # fmt: skip
+
+# 日期类的内置序列：由交易日算出来，每一行所有股票相同
+DATE_SERIES: frozenset[str] = frozenset({"DATE", "YEAR", "MONTH", "DAY", "WEEKDAY"})

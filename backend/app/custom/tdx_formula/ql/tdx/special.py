@@ -6,7 +6,9 @@ from app.custom.tdx_formula.ql.core.errors import FormulaError
 
 # 未来函数：会用到之后的数据，一律拒绝
 LOOKAHEAD_FUNCS: frozenset[str] = frozenset(
-    {"BACKSET", "BARSTATUS", "ZIG", "PEAK", "PEAKBARS", "TROUGH", "TROUGHBARS", "REFX", "REFXV", "FFT"}
+    {"BACKSET", "BARSTATUS", "ZIG", "PEAK", "PEAKBARS", "TROUGH", "TROUGHBARS", "REFX", "REFXV", "FFT",
+     # 下面这些把“最后一根 K 线”的情况搬到了历史上的每一天
+     "CONST", "ISLASTBAR", "CURRBARSCOUNT", "TOTALBARSCOUNT", "BARSNEXT", "XMA"}
 )
 
 # 画图函数：整条语句忽略。名字以 DRAW 开头的也算

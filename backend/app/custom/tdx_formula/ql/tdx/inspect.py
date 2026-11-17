@@ -70,6 +70,29 @@ def is_drawing_statement(statement: Statement) -> bool:
     return isinstance(statement.expr, Call) and is_drawing_func(statement.expr.name)
 
 
+def live_statements(program: Program) -> frozenset[int]:
+    """真正参与结果的语句（按位置）：非画图的输出语句，以及它们直接或间接用到的定义。
+
+    指标公式里常有一大段只给画图用的中间变量（提示文字、颜色条件等）。这些语句不影响任何输出，
+    所以不求值，里面用到的不支持的函数、未来函数也不算数。
+    """
+    live: set[int] = set()
+    needed: set[str] = set()
+    for stmt in reversed(program.statements):
+        if is_drawing_statement(stmt):
+            continue
+        wanted = stmt.is_output or (stmt.key is not None and stmt.key in needed)
+        if not wanted:
+            continue
+        live.add(stmt.index)
+        if stmt.key is not None:
+            needed.discard(stmt.key)  # 后面用到的就是这一条定义；再往前的同名定义只供更早的语句用
+        for node in walk(stmt.expr):
+            if isinstance(node, Ident):
+                needed.add(node.key)
+    return frozenset(live)
+
+
 def output_labels(program: Program) -> dict[int, str]:
     """{语句位置: 输出名}。只含非画图的输出语句；没有名字的输出叫"输出1""输出2"……（按输出的次序编号）。"""
     labels: dict[int, str] = {}

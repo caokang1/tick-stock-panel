@@ -122,6 +122,29 @@
 - 停牌日占一行，长期停牌的股票复牌后几天的均线类指标会和通达信有出入。
 - 公式里的 `V` 单位是股（通达信是手）；`CAPITAL` 是流通股本（股），`LTSZ` 是流通市值（元），`HSL` 是换手率（%）。
 
+## 公式里能用哪些函数
+
+通达信的函数没有现成的库可以整个搬过来，每个都是按它的算法另写的。目前支持的（登记在 `ql/tdx/registry.py`）：
+
+- **引用、均线**：REF、REFV、MA、EMA、EXPMA、EXPMEMA、SMA、MEMA、WMA、DMA
+- **最高最低、求和计数**：HHV、LLV、HHVBARS、LLVBARS、SUM、COUNT、SUMBARS
+- **统计**：STD、STDP、VAR、VARP、DEVSQ、AVEDEV、SLOPE、FORCAST
+- **条件、K 线计数**：IF、IFF、IFN、NOT、CROSS、LONGCROSS、EXIST、EXISTR、EVERY、LAST、FILTER、BETWEEN、RANGE、
+  UPNDAY、DOWNNDAY、NDAY、BARSLAST、BARSLASTCOUNT、BARSSINCE、BARSSINCEN、BARSCOUNT、VALUEWHEN
+- **数学**：ABS、MAX、MIN、SQRT、POW、EXP、LN、LOG、SIN、COS、TAN、ASIN、ACOS、ATAN、ROUND、INTPART、FRACPART、
+  CEILING、FLOOR、SIGN、SGN、MOD、REVERSE
+- **行情和日期**：C/CLOSE、O/OPEN、H/HIGH、L/LOW、V/VOL、AMOUNT、CAPITAL、LTSZ、HSL、DATE、YEAR、MONTH、DAY、WEEKDAY，
+  以及 DYNAINFO(5/6/7)（按日线回看时就是当天的最高、最低、收盘）
+- **筹码**：WINNER、COST。按换手率估算筹码分布（每天换手的筹码按当天最低到最高价均匀铺开），
+  通达信自己的算法没有公开，数值会有出入；全市场算一遍要十几秒，同一条公式里的几个会合在一趟里算。
+
+几条规则：
+
+- **未来函数一律拒绝**：ZIG、PEAK、TROUGH、BACKSET、REFX、XMA、CONST、ISLASTBAR、CURRBARSCOUNT 等会用到之后的数据。
+- **画图语句整体忽略**（DRAW 开头的、STICKLINE 等）。
+- **只检查参与结果的语句**：只给画图用、不影响任何输出的中间变量不求值，里面写了不支持的函数或未来函数也不拦。
+- **必须有一条选股条件**：只输出数值的指标公式（没有“XG:条件;”这样的输出）不能用来选股。
+
 ## 接口
 
 都在 `/api/custom/tdx-formula/` 下面：
