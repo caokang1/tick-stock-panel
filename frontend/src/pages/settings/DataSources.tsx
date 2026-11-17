@@ -576,7 +576,8 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
   const prefs = usePreferences()
   const sources = useQuery({ queryKey: QK.dataSources, queryFn: api.dataSources })
   const matrix = useQuery({ queryKey: QK.capabilityMatrix, queryFn: api.capabilityMatrix })
-  const [selected, setSelected] = useState<string>('tickflow') // 当前在下方配置的源 name
+  // 当前在下方配置的源 name。没点过任何卡片时跟着「正在用的数据源」走, 免得每次进来都停在 TickFlow
+  const [picked, setSelected] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
   const builtin: DataSourceItem[] = sources.data?.builtin ?? []
@@ -584,6 +585,7 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
   const customList: DataSourceItem[] = sources.data?.custom ?? []
   const errors = sources.data?.errors ?? []
   const activeName = prefs.data?.daily_data_provider || 'tickflow'
+  const selected = picked ?? activeName
 
   const pluginItems: DataSourceItem[] = pluginList.map(p => ({
     name: p.name, display_name: p.display_name, datasets: p.datasets,
