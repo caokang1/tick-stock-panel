@@ -246,10 +246,12 @@ def split_formula(text: str) -> SplitResult:
 
     out = tinspect.last_boolean_output(program)
     if out is None:
+        how = ("请在公式最后加一行选股条件，写成“XG:条件;”，条件里可以直接用公式前面定义的名字，"
+               "例如 XG:C>MA(C,5); 。指标里画图语句的第一个参数（什么时候画）通常就是现成的条件。")
         if analysis.drawing_only:
-            raise FormulaError(f"{MSG_DRAWING_ONLY}，无法用来选股。", kind="unsupported")
+            raise FormulaError(f"{MSG_DRAWING_ONLY}，无法用来选股。{how}", kind="unsupported")
         raise FormulaError(
-            "公式里没有找到选股条件。选股公式的最后一条输出应该是一个“成立或不成立”的判断，例如 XG:C>MA(C,5);",
+            f"这条公式只输出数值（是一条指标公式），没有“成立或不成立”的选股条件，无法用来选股。{how}",
             kind="unsupported",
         )
 
