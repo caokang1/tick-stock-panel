@@ -1116,6 +1116,18 @@ async def _run_scheduled_review(repo) -> None:
             logger.info("scheduled review skipped: AI key not configured")
             return
 
+        # 最新这一天的复盘, 收盘后已经手动生成过: 不再重复跑一遍 (没装 recap_plus 扩展时照旧每次都跑)
+        try:
+            from app.custom.recap_plus.sync import already_done
+        except ImportError:
+            already_done = None
+        latest_of = getattr(repo, "latest_enriched_date", None)
+        if already_done is not None and callable(latest_of) and already_done(
+            market_recap_reports.list_reports(), latest_of(),
+        ):
+            logger.info("scheduled review skipped: today's recap already generated after close")
+            return
+
         app_state = _get_app_state()
         quote_service = getattr(app_state, "quote_service", None) if app_state else None
         depth_service = getattr(app_state, "depth_service", None) if app_state else None

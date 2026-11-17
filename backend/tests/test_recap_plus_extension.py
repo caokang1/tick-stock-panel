@@ -208,3 +208,52 @@ def test_holding_notices_are_cached_and_survive_a_failed_refresh(env):
     # 只看近三天：3 月 14 日的留下，3 月 1 日的不要
     assert [n["id"] for n in notices.within_days(first["items"], now, 3)] == ["AN1"]
     assert notices.within_days(first["items"], now + timedelta(days=3), 3) == []
+
+
+def test_scheduled_recap_is_skipped_only_when_the_day_was_recapped_after_close():
+    from datetime import date
+
+    from app.custom.recap_plus import sync
+
+    day = date(2026, 11, 17)
+    assert sync.already_done([], day) is False
+    assert sync.already_done([{"as_of": "2026-11-17", "created_at": "2026-11-17T16:20:00"}], day) is True
+    # 盘中生成的不算：当天的行情还没走完
+    assert sync.already_done([{"as_of": "2026-11-17", "created_at": "2026-11-17T11:00:00"}], day) is False
+    # 今天生成的，但复盘的是前一天的数据：今天的仍然要跑
+    assert sync.already_done([{"as_of": "2026-11-16", "created_at": "2026-11-17T17:21:00"}], day) is False
+    assert sync.already_done([{"as_of": "2026-11-17", "created_at": "乱码"}], day) is False
+    assert sync.already_done([{"as_of": "2026-11-17", "created_at": "2026-11-17T16:20:00"}], None) is False
+
+
+def test_manual_recap_fetches_todays_snapshot_only_when_it_is_missing(monkeypatch):
+    import types
+    from datetime import date, datetime
+
+    from app.custom.recap_plus import sync
+
+    calls = []
+    state = {"latest": date(2026, 11, 16), "traded": True, "source": "freecn"}
+    repo = types.SimpleNamespace(latest_enriched_date=lambda: state["latest"])
+    quotes = types.SimpleNamespace(refresh=lambda: calls.append("refresh"))
+    monkeypatch.setattr(sync, "_daily_source", lambda: state["source"])
+    monkeypatch.setattr(sync, "_traded_today", lambda now: state["traded"])
+    tuesday = datetime(2026, 11, 17, 16, 0)
+
+    assert sync.ensure_today(repo, quotes, tuesday) is True and calls == ["refresh"]  # 收盘后、当天的还没有：取一次
+    state["latest"] = date(2026, 11, 17)
+    assert sync.ensure_today(repo, quotes, tuesday) is False  # 当天的已经有了：不重复取
+    state["latest"] = date(2026, 11, 16)
+    assert sync.ensure_today(repo, quotes, datetime(2026, 11, 17, 9, 0)) is False  # 还没开盘
+    assert sync.ensure_today(repo, quotes, datetime(2026, 11, 21, 16, 0)) is False  # 周六
+    state["traded"] = False
+    assert sync.ensure_today(repo, quotes, tuesday) is False  # 节假日：今天没有成交
+    state.update(traded=True, source="tickflow")
+    assert sync.ensure_today(repo, quotes, tuesday) is False  # 日 K 不是免费公开来源：不管
+    assert sync.ensure_today(repo, None, tuesday) is False and calls == ["refresh"]
+
+    def boom():
+        raise RuntimeError("取不到")
+
+    state["source"] = "freecn"
+    assert sync.ensure_today(repo, types.SimpleNamespace(refresh=boom), tuesday) is False  # 出错不往外抛

@@ -1286,3 +1286,37 @@ def test_codelike_can_be_used_inside_a_calculation_and_index_close_follows_the_m
     # 只筛股票池的 CODELIKE 照旧变成股票范围，不进条件
     pool = split_formula("XG:C>MA(C,5) AND NOT(CODELIKE('30'));")
     assert pool.universe.exclude_chinext is True and "CODELIKE" not in pool.conditions[0].formula
+
+
+def test_tsp_is_not_synced_again_when_it_already_has_the_official_bars(env, tmp_path, monkeypatch):
+    """用户自己点过同步以后，自动同步不再重复拉一遍；只有实时行情写的快照时仍然要同步。"""
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+
+    from app.custom.tdx_formula import tsp_sync
+
+    client, _ = env
+    client.get(f"{PREFIX}/data/schedule")
+    data_dir = tmp_path / "tsp"
+    monkeypatch.setattr(tsp_sync, "_daily_source", lambda: "freecn")
+    now, latest = _datetime(2024, 3, 14, 18, 40), _date(2024, 3, 14)
+    part = data_dir / "kline_daily" / "date=2024-03-14"
+    part.mkdir(parents=True)
+
+    def write(stamps) -> None:
+        pq.write_table(pa.table({"symbol": ["600001.SH", "600002.SH"], "close": [1.0, 2.0],
+                                 "quote_ts": pa.array(stamps, type=pa.int64())}), part / "part.parquet")
+
+    write([1710399600000, None])  # 有一行带着快照时间：是实时行情写的
+    assert tsp_sync.tsp_has_official(data_dir, latest) is False
+    sync = tsp_sync.TspSync()
+    assert sync.due(data_dir, latest, now) is True
+    write([None, None])  # 正式日线
+    assert tsp_sync.tsp_has_official(data_dir, latest) is True
+    assert sync.due(data_dir, latest, now) is False and sync.synced_through() == latest
+    assert "没有重复同步" in sync.info()["tsp_sync_message"]
+    assert tsp_sync.tsp_has_official(data_dir, _date(2024, 3, 15)) is False  # 这一天还没有数据
+    # 正式日线的文件也可能根本没有 quote_ts 这一列，而且文件里自己带着 date 列
+    pq.write_table(pa.table({"symbol": ["600001.SH"], "date": pa.array([latest], type=pa.date32()), "close": [1.0]}),
+                   part / "part.parquet")
+    assert tsp_sync.tsp_has_official(data_dir, latest) is True

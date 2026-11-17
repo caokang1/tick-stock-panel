@@ -203,6 +203,18 @@ def _extension_context(repo, as_of: str | None) -> str:
     return recap_context(getattr(getattr(repo, "store", None), "data_dir", None), as_of)
 
 
+def _ensure_today_data(repo, quote_service) -> None:
+    """复盘前让扩展看一眼：今天开过市而当天行情还没进来时，先取一次当天的快照。没装该扩展时什么都不做。
+
+    可能联网 (经限流器) 并写当日分区, 调用方须放到线程里执行。
+    """
+    try:
+        from app.custom.recap_plus.sync import ensure_today
+    except ImportError:
+        return
+    ensure_today(repo, quote_service)
+
+
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
                        bench_context: str = "", extra_context: str = "") -> str:
     """构建用户消息:复盘日期 + 市场数据精简切片 + 龙虎榜(可选) + 盘前风向标(可选) + 新闻 + 关注点。"""
@@ -319,6 +331,12 @@ async def recap_market_stream(
         focus: 用户追加的复盘关注点。
         news: 预检索的新闻列表(P1 不传,留 None 走降级说明;P3 由 news_search 注入)。
     """
+    # 0. 没指定日期 (= 要最新的) 时, 先确保当天的行情在: 手动复盘随时点都给当天的
+    if as_of is None:
+        import asyncio
+
+        await asyncio.to_thread(_ensure_today_data, repo, quote_service)
+
     # 1. 装配市场总览
     overview = build_market_overview(repo, quote_service, depth_service, as_of)
     as_of_str = overview.get("as_of")

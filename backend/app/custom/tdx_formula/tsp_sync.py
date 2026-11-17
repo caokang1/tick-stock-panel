@@ -48,6 +48,33 @@ def tsp_latest_date(data_dir: Path) -> date | None:
     return latest
 
 
+def tsp_has_official(data_dir: Path, day: date) -> bool:
+    """TSP 里这一天的日 K 是不是已经是正式日线（用户自己点过同步，或者别的任务已经同步过）。
+
+    实时行情写出来的行带着行情快照的时间（quote_ts），正式日线没有（没有这一列，或者这一列是空的）：
+    这一天有数据、而且没有一行带快照时间，就是正式的。
+    """
+    import pyarrow.parquet as pq
+
+    files = sorted((data_dir / "kline_daily" / f"date={day.isoformat()}").glob("*.parquet"))
+    if not files:
+        return False
+    rows = 0
+    try:
+        for path in files:
+            # 用 ParquetFile 只读这一个文件：按目录读会把路径里的 date=… 当成一列，和文件里的 date 列冲突
+            file = pq.ParquetFile(path)
+            rows += file.metadata.num_rows
+            if "quote_ts" not in file.schema_arrow.names:
+                continue  # 正式日线写出来的文件可以根本没有这一列
+            column = file.read(columns=["quote_ts"]).column("quote_ts")
+            if len(column) - column.null_count:
+                return False
+    except Exception:  # noqa: BLE001 —— 读不出来（文件正在写、没有这一列）就当作还没同步
+        return False
+    return rows > 0
+
+
 def _daily_source() -> str:
     from app.services import preferences
 
@@ -89,6 +116,11 @@ class TspSync:
         synced = self.synced_through()
         if tsp_latest >= local_latest and synced is not None and synced >= local_latest:
             return False  # 日期不落后，而且这一天的正式行情已经同步过
+        if tsp_latest >= local_latest and tsp_has_official(data_dir, local_latest):
+            # 这一天的正式日线已经在 TSP 里了（用户自己点过同步）：记下来，不再重复拉一遍
+            live_store.set_setting(KEY_SYNCED, local_latest.isoformat())
+            self._message = f"{now:%m-%d %H:%M} {local_latest} 的行情 TSP 已经同步过，没有重复同步。"
+            return False
         if self._attempts.get(local_latest, 0) >= MAX_ATTEMPTS:
             return False
         return self._last_attempt is None or now - self._last_attempt >= timedelta(minutes=RETRY_MINUTES)
