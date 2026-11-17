@@ -21,6 +21,9 @@ DRAWING_FUNCS: frozenset[str] = frozenset(
 
 # 股票池函数：不通过公式求值，由"股票范围"设置实现
 POOL_FUNCS: frozenset[str] = frozenset({"NAMELIKE", "CODELIKE", "DYNAINFO", "FINANCE", "INBLOCK"})
+# 股票池函数里能直接算出来的：CODELIKE 只看代码，每只股票一个固定的“是/否”，可以写在计算里
+# （常见写法：IF(CODELIKE('30'),WINNER(C*1.2),WINNER(C*1.1))，按涨跌幅限制取不同的值）
+EVALUABLE_POOL_FUNCS: frozenset[str] = frozenset({"CODELIKE"})
 
 MSG_LOOKAHEAD = "这个公式会用到之后的数据，历史上看起来很准，但实盘时这些信号当时并不存在。"
 MSG_DRAWING_ONLY = "这是画图指标，没有选股条件"

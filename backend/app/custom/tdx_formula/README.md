@@ -155,6 +155,9 @@ TSP 自带的信号只认“字段 比较 数值”，通达信公式翻译不�
   CEILING、FLOOR、SIGN、SGN、MOD、REVERSE
 - **行情和日期**：C/CLOSE、O/OPEN、H/HIGH、L/LOW、V/VOL、AMOUNT、CAPITAL、LTSZ、HSL、DATE、YEAR、MONTH、DAY、WEEKDAY，
   以及 DYNAINFO(5/6/7)（按日线回看时就是当天的最高、最低、收盘）
+- **大盘指数**：INDEXC、INDEXO、INDEXH、INDEXL、INDEXV、INDEXA。沪市股票对上证指数，深市股票对深证成指；北交所没有对应的指数，为空。
+- **按代码区分**：CODELIKE('30') 可以写在计算里（例如 `IF(CODELIKE('30'),WINNER(C*1.2),WINNER(C*1.1))`）；
+  单独用 AND 连在选股条件上的 CODELIKE、NAMELIKE 仍然转成“股票范围”的设置。
 - **筹码**：WINNER、COST。按换手率估算筹码分布（每天换手的筹码按当天最低到最高价均匀铺开），
   通达信自己的算法没有公开，数值会有出入；全市场算一遍要十几秒，同一条公式里的几个会合在一趟里算。
 

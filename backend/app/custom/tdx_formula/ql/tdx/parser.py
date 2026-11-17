@@ -290,6 +290,8 @@ def parse(text: str) -> Program:
     写法有误时抛 FormulaError(kind="syntax")，带行号。
     未来函数的判断优先于其他错误：写法有误的公式里如果出现了未来函数，抛的是 kind="lookahead"。
     """
+    # 从聊天软件、网页里复制公式时，末尾常常多带一个顿号、逗号之类的标点：不算公式内容，去掉
+    text = text.rstrip().rstrip("、，。,").rstrip()
     try:
         return _rewrite_quotes(_Parser(_tokenize(text)).program(text))
     except FormulaError as err:

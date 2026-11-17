@@ -1253,3 +1253,36 @@ def test_panel_side_is_asked_to_save_and_later_delete_the_generated_strategy(bri
     log.clear()
     b.set_enabled(sid, False, data_dir, Spy())
     assert log == [("delete", pid), "after"]
+
+
+def test_codelike_can_be_used_inside_a_calculation_and_index_close_follows_the_market(live_env):
+    """CODELIKE 写在 IF 里是按股票取不同的数，不是筛股票池；INDEXC 是股票所在市场的大盘指数。"""
+    from app.custom.tdx_formula.ql.blocks.split import split_formula
+    from app.custom.tdx_formula.ql.data import store
+    from app.custom.tdx_formula.ql.tdx import evaluate, parse
+
+    client, market = live_env
+    assert client.get(f"{PREFIX}/status").status_code == 200  # 让扩展把数据目录指到这次测试的行情上
+    n = len(DAYS)
+    for code, base in (("sh.000001", 3000.0), ("sz.399001", 10000.0)):
+        pq.write_table(pa.table({
+            "date": pa.array(DAYS.date, type=pa.date32()), "code": [code] * n,
+            "open": base + np.arange(n), "high": base + np.arange(n), "low": base + np.arange(n),
+            "close": base + np.arange(n), "volume": np.full(n, 1e9), "amount": np.full(n, 1e11),
+        }), market / "index" / f"{code}.parquet")
+    panel = store.build_panel()
+    out = evaluate(parse("K:IF(CODELIKE('600'),2,1);\nI:INDEXC;"), panel)
+    by_code = dict(zip([str(c) for c in panel.codes], range(len(panel.codes)), strict=True))
+    assert out["K"][-1, by_code["sh.600001"]] == 2 and out["K"][-1, by_code["sz.000003"]] == 1
+    assert out["I"][-1, by_code["sh.600001"]] == 3000.0 + n - 1  # 沪市股票：上证指数
+    assert out["I"][-1, by_code["sz.000003"]] == 10000.0 + n - 1  # 深市股票：深证成指
+
+    # 整段带 CODELIKE 的计算当成一个技术条件；单独的 NAMELIKE('S')、NAMELIKE('*') 还是“排除 ST”；末尾多出的顿号不算错
+    result = split_formula(
+        "X:=IF(CODELIKE('30'),C*1.2,C*1.1);\n买:=X>REF(X,1) AND C>INDEXC/1000;\n"
+        "去ST:=NOT(NAMELIKE('S') OR NAMELIKE('*'));\n选股:买 AND 去ST;\n、\n")
+    assert [c.name for c in result.conditions] == ["买"] and "CODELIKE" in result.conditions[0].formula
+    assert result.universe.exclude_st is True and result.warnings == ()
+    # 只筛股票池的 CODELIKE 照旧变成股票范围，不进条件
+    pool = split_formula("XG:C>MA(C,5) AND NOT(CODELIKE('30'));")
+    assert pool.universe.exclude_chinext is True and "CODELIKE" not in pool.conditions[0].formula

@@ -28,7 +28,11 @@ from app.custom.tdx_formula.ql.tdx.ast import (
     String,
     Unary,
 )
-from app.custom.tdx_formula.ql.tdx.special import MSG_DRAWING_ONLY, lookahead_error
+from app.custom.tdx_formula.ql.tdx.special import (
+    EVALUABLE_POOL_FUNCS,
+    MSG_DRAWING_ONLY,
+    lookahead_error,
+)
 
 _ALIASES = {"CLOSE": "C", "OPEN": "O", "HIGH": "H", "LOW": "L", "VOL": "V", "AMO": "AMOUNT"}
 
@@ -180,7 +184,8 @@ def _apply_pool(expr: Expr, program: Program, ctx: Statement | None, negated: bo
         arg = expr.args[0] if expr.args else None
         text = arg.value if isinstance(arg, String) else None
         flag: str | None = None
-        if expr.key == "NAMELIKE" and text is not None and "ST" in text.upper():
+        # NAMELIKE('S')、NAMELIKE('*') 是排除 ST、*ST、S*ST 的常见写法
+        if expr.key == "NAMELIKE" and text is not None and ("ST" in text.upper() or text.strip().upper() in ("S", "*")):
             flag = "exclude_st"
         elif expr.key == "CODELIKE" and text is not None and text.startswith(("688", "689")):
             flag = "exclude_star"
@@ -214,6 +219,10 @@ def _classify_terms(program: Program, out: Statement) -> list[tuple[Expr, Statem
             raise FormulaError("公式的条件嵌套太深，无法拆分。", kind="unsupported")
         term, ctx = pending.pop(0)
         if not tinspect.uses_pool_functions(program, term, before=ctx) or _is_pure_pool(term, program, ctx):
+            result.append((term, ctx))
+            continue
+        if tinspect.pool_functions_used(program, term, before=ctx) <= EVALUABLE_POOL_FUNCS:
+            # 只是在计算里用了 CODELIKE（例如按创业板和主板取不同的数）：它能直接算出来，整段当成技术条件
             result.append((term, ctx))
             continue
         inner, inner_ctx = term, ctx
@@ -262,7 +271,7 @@ def split_formula(text: str) -> SplitResult:
     shapes = _builtin_shapes()
 
     for term, ctx in _classify_terms(program, out):
-        if tinspect.uses_pool_functions(program, term, before=ctx):
+        if tinspect.uses_pool_functions(program, term, before=ctx) and _is_pure_pool(term, program, ctx):
             _apply_pool(term, program, ctx, False, flags, warnings)
             continue
         index = len(conditions) + 1

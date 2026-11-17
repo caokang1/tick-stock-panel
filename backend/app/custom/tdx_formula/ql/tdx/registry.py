@@ -118,3 +118,7 @@ BUILTIN_SERIES: dict[str, str] = {
 
 # 日期类的内置序列：由交易日算出来，每一行所有股票相同
 DATE_SERIES: frozenset[str] = frozenset({"DATE", "YEAR", "MONTH", "DAY", "WEEKDAY"})
+# 大盘指数的行情：名字 → 指数日线里的列。沪市股票对上证指数，深市股票对深证成指
+INDEX_SERIES: dict[str, str] = {"INDEXC": "close", "INDEXO": "open", "INDEXH": "high", "INDEXL": "low",
+                                "INDEXV": "volume", "INDEXA": "amount"}
+INDEX_BY_MARKET: dict[str, str] = {"sh": "sh.000001", "sz": "sz.399001"}

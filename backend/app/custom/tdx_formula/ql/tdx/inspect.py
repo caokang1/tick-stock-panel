@@ -211,6 +211,17 @@ def uses_pool_functions(program: Program, target: str | Expr, before: Statement 
     return any(called_functions(expr) & POOL_FUNCS for expr in exprs)
 
 
+def pool_functions_used(program: Program, target: str | Expr, before: Statement | None = None) -> set[str]:
+    """target 自己或它依赖的定义里用到了哪些股票池函数。"""
+    exprs = [stmt.expr for stmt in dependency_closure(program, target, before)]
+    if not isinstance(target, str):
+        exprs.append(target)
+    used: set[str] = set()
+    for expr in exprs:
+        used |= called_functions(expr) & POOL_FUNCS
+    return used
+
+
 # ---------------------------------------------------------------- (d) 数字字面量
 
 

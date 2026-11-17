@@ -37,8 +37,11 @@ from app.custom.tdx_formula.ql.tdx.registry import (
     CHIP_FUNCTIONS,
     DATE_SERIES,
     FUNCTIONS,
+    INDEX_BY_MARKET,
+    INDEX_SERIES,
 )
 from app.custom.tdx_formula.ql.tdx.special import (
+    EVALUABLE_POOL_FUNCS,
     LOOKAHEAD_FUNCS,
     MSG_DRAWING_ONLY,
     POOL_FUNCS,
@@ -90,6 +93,8 @@ def analyze(program: Program) -> Analysis:
                     lookahead.add(key)
                 elif drawing:
                     continue
+                elif key in EVALUABLE_POOL_FUNCS:
+                    continue  # 能直接算出来，按普通函数对待
                 elif key in POOL_FUNCS:
                     pool.add(key)
                     uses_pool = True
@@ -151,7 +156,7 @@ def ensure_evaluable(program: Program) -> Analysis:
 
 # 筹码函数的结果很贵（全市场要算十几秒），而同一份行情上常常反复用到同样的几个
 # （一条公式拆成几个条件、统计和列表各算一次）。这里留最近几个结果，按“行情对象 + 写法”认。
-_CHIP_CACHE_SIZE = 6
+_CHIP_CACHE_SIZE = 8
 _chip_cache: OrderedDict[tuple[int, str, str], tuple[weakref.ref[Panel], np.ndarray]] = OrderedDict()
 _chip_lock = threading.Lock()
 
@@ -293,6 +298,8 @@ class _Evaluator:
             return np.asarray(getattr(self._panel, BUILTIN_SERIES[key]))
         if key in DATE_SERIES:
             return self._date_series(key)
+        if key in INDEX_SERIES:
+            return self._index_series(key)
         if key in self._ignored:
             raise FormulaError(
                 f"第 {node.line} 行用到了“{node.name}”，但它是一条画图语句，没有可以计算的结果。",
@@ -302,6 +309,44 @@ class _Evaluator:
             f"第 {node.line} 行用到了没有定义的名字“{node.name}”。请检查是否写错，或者它的定义是否写在了后面。",
             kind="syntax", names=[node.name], line=node.line,
         )  # fmt: skip
+
+    def _index_series(self, key: str) -> np.ndarray:
+        """INDEXC 等：股票所在市场的大盘指数（沪市对上证指数，深市对深证成指）当天的值；北交所没有对应的指数，为空。"""
+        from app.custom.tdx_formula.ql.data import store as data_store
+
+        column = INDEX_SERIES[key]
+        days = self._panel.dates.astype("datetime64[D]")
+        out = np.full(self._shape, np.nan)
+        markets = np.array([str(code).partition(".")[0].lower() for code in self._panel.codes])
+        for market, index_code in INDEX_BY_MARKET.items():
+            cols = markets == market
+            if not cols.any():
+                continue
+            df = data_store.read_index(index_code)
+            if df is None or len(df) == 0:
+                raise FormulaError(
+                    f"公式里用到了大盘指数（{key}），但本机还没有指数 {index_code} 的行情。请到“设置 → 数据源”更新行情后再试。",
+                    kind="unsupported", names=[key],
+                )  # fmt: skip
+            df = df.sort_values("date")
+            src = df["date"].to_numpy().astype("datetime64[D]")
+            values = df[column].to_numpy(dtype=float)
+            pos = np.searchsorted(src, days, side="right") - 1
+            series = np.where(pos >= 0, values[np.clip(pos, 0, None)], np.nan)
+            out[:, cols] = series[:, None]
+        return out
+
+    def _code_like(self, node: Call) -> np.ndarray:
+        """CODELIKE('30')：代码以这几个字符开头的股票为真，每只股票各天都一样。"""
+        arg = node.args[0] if len(node.args) == 1 else None
+        if not isinstance(arg, String):
+            raise FormulaError(
+                f"第 {node.line} 行写法有误：CODELIKE 要写成 CODELIKE('30') 这样，括号里是代码开头的几个字符",
+                kind="syntax", names=["CODELIKE"], line=node.line,
+            )  # fmt: skip
+        prefix = arg.value.strip()
+        mask = np.array([str(code).partition(".")[2].startswith(prefix) for code in self._panel.codes], dtype=bool)
+        return np.broadcast_to(mask[None, :], self._shape)
 
     def _date_series(self, key: str) -> np.ndarray:
         """DATE（通达信写法：(年-1900)*10000+月*100+日）、YEAR、MONTH、DAY、WEEKDAY（周一到周日为 1 到 7）。"""
@@ -354,6 +399,8 @@ class _Evaluator:
         raise TypeError(f"未知的运算符：{op}")
 
     def _call(self, node: Call) -> np.ndarray:
+        if node.key == "CODELIKE":
+            return self._code_like(node)
         spec = FUNCTIONS[node.key]  # ensure_evaluable 已保证函数存在
         if node.key in CHIP_FUNCTIONS and len(node.args) == 1:
             ready = self._chips.get(self._chip_key(node))
