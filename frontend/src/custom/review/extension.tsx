@@ -1,6 +1,5 @@
 import { lazy } from 'react'
 import type { FrontendExtension } from '@/extensions/types'
-import { IconReview } from '@/components/BrandIcons'
 
 export const ReviewPage = lazy(() => import('./Page').then(m => ({ default: m.ReviewPage })))
 
@@ -12,9 +11,7 @@ const extension: FrontendExtension = {
   routes: [
     { id: 'review', path: '/review', component: ReviewPage },
   ],
-  navigation: [
-    { id: 'review', routeId: 'review', label: '复盘', icon: IconReview },
-  ],
+  // 左侧不再单独放入口：生成复盘从“每日复盘”页右上角的按钮进来，两个入口并成一个
 }
 
 export default extension

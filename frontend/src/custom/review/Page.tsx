@@ -276,6 +276,13 @@ export function ReviewPage() {
         subtitle={`${displayDate}${data?.emotion ? ` · 情绪 ${data.emotion.label}` : ''}`}
         right={
           <div className="flex items-center gap-1">
+            <Link
+              to="/daily-review"
+              className="inline-flex items-center gap-1 rounded-btn border border-border bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground"
+              title="回到每日复盘，看走势和归档"
+            >
+              返回每日复盘
+            </Link>
             <button
               onClick={() => { marketQuery.refetch() }}
               disabled={marketQuery.isFetching}

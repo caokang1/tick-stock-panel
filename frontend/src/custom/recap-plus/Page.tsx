@@ -80,7 +80,7 @@ function Home({ data, latest }: { data: Dashboard; latest: RecapReport | undefin
             ? <MarkdownRenderer content={overview} />
             : (
               <p className="text-xs text-muted">
-                {data.as_of} 的复盘报告还没有生成。到 <Link to="/review" className="text-accent hover:underline">复盘</Link> 页点“开始复盘”并保存，
+                {data.as_of} 的复盘报告还没有生成。点右上角的 <Link to="/review" className="text-accent hover:underline">生成 / 重跑复盘</Link>，点“开始复盘”并保存，
                 或者等每天的定时复盘跑完，这里就会显示当天的结论。
               </p>
             )}
@@ -132,7 +132,7 @@ function Archive({ reports }: { reports: RecapReport[] }) {
   if (!reports.length) {
     return (
       <p className={`${CARD} text-xs text-muted`}>
-        还没有存档的复盘。到 <Link to="/review" className="text-accent hover:underline">复盘</Link> 页生成并保存一份，或者等定时复盘跑完。
+        还没有存档的复盘。点右上角的 <Link to="/review" className="text-accent hover:underline">生成 / 重跑复盘</Link> 生成并保存一份，或者等定时复盘跑完。
       </p>
     )
   }
@@ -178,6 +178,14 @@ export function DailyReview() {
       <PageHeader
         title="每日复盘"
         subtitle={`数据日期：${data?.as_of ?? '—'} · 全部数据基于公开渠道整理，不构成投资建议`}
+        right={
+          <Link
+            to="/review" title="手动生成或重跑当天的复盘，生成后会出现在归档里"
+            className="shrink-0 rounded-btn border border-border bg-elevated px-3 py-1.5 text-xs text-secondary transition-colors hover:text-foreground"
+          >
+            生成 / 重跑复盘
+          </Link>
+        }
       />
       <nav className="flex gap-1 border-b border-border px-5" role="tablist">
         <button role="tab" aria-selected={tab === 'home'} className={tabClass(tab === 'home')} onClick={() => setTab('home')}>
