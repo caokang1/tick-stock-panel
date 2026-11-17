@@ -111,6 +111,21 @@ def test_index_bars_only_for_indexes_that_were_downloaded(market):
     assert p.get_daily(["510300.SH"], START, END, asset_type="etf").height == 0
 
 
+def test_index_without_amount_is_empty_not_nan(market):
+    """指数来源不带成交额时要留空：NaN 会被面板的日K自检当成坏数据，而且修补不掉。"""
+    import pyarrow.parquet as pq
+
+    path = market / "index" / "sh.000300.parquet"
+    table = pq.read_table(path).to_pandas()
+    table["amount"] = np.nan
+    table.to_parquet(path, index=False)
+    ql_store._panel_memory.clear()
+    df = freecn.FreeCnProvider().get_daily(["000300.SH"], START, END, asset_type="index")
+    assert df["amount"].null_count() == df.height and df["amount"].is_nan().sum() in (0, None)
+    from app.services import data_integrity
+    assert data_integrity.invalid_daily_rows(df).is_empty()
+
+
 def test_adjust_factors_are_per_event_ratios(market):
     p = freecn.FreeCnProvider()
     df = p.get_adj_factors(["600001.SH", "000002.SZ"], START, END)

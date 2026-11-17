@@ -207,7 +207,7 @@ class FreeCnProvider:
             "low": df["low"].to_numpy(dtype="float64"), "close": df["close"].to_numpy(dtype="float64"),
             "volume": np.nan_to_num(volume).astype("int64"),
             "amount": df["amount"].to_numpy(dtype="float64"),
-        }, schema=_DAILY_SCHEMA)
+        }, schema=_DAILY_SCHEMA).with_columns(pl.col("amount").fill_nan(None))  # 没有成交额就留空，不能写成 NaN
 
     def iter_daily(self, symbols: list[str], start_time: datetime, end_time: datetime, asset_type: str = "stock",
                    on_chunk_done: Progress | None = None) -> Iterator[pl.DataFrame]:
