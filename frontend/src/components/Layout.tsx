@@ -51,6 +51,7 @@ import {
   HardDriveDownload,
 } from 'lucide-react'
 import { Logo } from './Logo'
+import { Motto } from '@/custom/market-motto/Motto'
 import { api, type CapabilityMatrix, type IndexQuote } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { useIsDesktop } from '@/lib/useMediaQuery'
@@ -891,7 +892,7 @@ export function Layout() {
         <div className={cn('border-b border-border shrink-0', railMode ? 'px-2 pt-3 pb-2' : 'px-4 pt-4 pb-3')}>
           {/* Brand block — 收起时只显 logo 居中 */}
           <div className={cn('flex', railMode ? 'flex-col items-center gap-2' : 'items-center gap-2')}>
-            {/* 本地定制: 展开时用一句话代替图标和名称; 收起后放不下这句话, 仍显示图标 */}
+            {/* 本地定制: 展开时用一句话代替图标和名称 (按市场情绪评分挑, 见 custom/market-motto); 收起后放不下, 仍显示图标 */}
             {railMode ? (
               <Logo
                 size={24}
@@ -899,12 +900,7 @@ export function Layout() {
                 style={{ color: BRAND }}
               />
             ) : (
-              <div
-                className="font-semibold text-[13px] tracking-[0.08em] whitespace-nowrap drop-shadow-[0_0_8px_rgba(139,92,246,0.4)]"
-                style={{ color: BRAND }}
-              >
-                知行合一，贪是原罪
-              </div>
+              <Motto color={BRAND} />
             )}
             {/* 收起/展开 按钮 (桌面三态循环) / 移动端抽屉关闭按钮 */}
             {isDesktop ? (
