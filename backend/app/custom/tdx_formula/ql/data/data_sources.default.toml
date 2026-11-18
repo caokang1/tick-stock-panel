@@ -76,7 +76,9 @@ index_daily = ["akshare_sina", "akshare_em"]
 st_history = ["baostock"]
 securities = ["baostock"]
 trade_calendar = ["baostock", "akshare_sina"]
-market_snapshot = ["baostock", "akshare_em"]
+# 某日全市场：BaoStock 要到 17:30 才有当天的；在那之前由腾讯的实时行情顶上（收盘后它就是当天的日线），
+# 东方财富排最后（全市场要翻约 60 页，经常超时）。补以前的交易日只有 BaoStock 能给。
+market_snapshot = ["baostock", "tencent_quote", "akshare_em"]
 industry = ["baostock"]
 # 给已有的日线补流通股本：新浪直接给出；已退市的股票新浪没有，换 BaoStock（用换手率反推）
 float_shares = ["akshare_sina", "baostock"]
@@ -98,7 +100,8 @@ indices = ["sh.000001", "sh.000300", "sh.000905", "sh.000852", "sz.399001", "sz.
 max_catchup_days = 30
 # 每天几点（北京时间）之后，当天的数据才算已经入库。BaoStock 17:30 完成日线、18:00 完成复权因子。
 # 在这之前运行下载或更新，只处理到前一天，避免把盘中的半截行情当成当天的日线。
-# 日线和复权因子现在优先取新浪（收盘后不久就有），BaoStock 只用来取股票清单、ST 和交易日历，
-# 所以可以在用户配置里改早到 17:30（data_ready_hour = 17, data_ready_minute = 30）。再早 BaoStock 当天的数据还没入库。
+# 每日更新取"某日全市场"：BaoStock 当天的数据没入库时改用腾讯的实时行情（收盘后就是当天的日线），
+# 所以可以在用户配置里改早，例如 16:30（data_ready_hour = 16, data_ready_minute = 30）。
+# 不要早于 15:05：那时收盘价还没落定。
 data_ready_hour = 18
 data_ready_minute = 0

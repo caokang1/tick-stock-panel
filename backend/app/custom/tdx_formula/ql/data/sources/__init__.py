@@ -35,10 +35,17 @@ def _akshare_tx() -> DataSource:
     return AkshareTxSource()
 
 
+def _tencent_quote() -> DataSource:
+    from app.custom.tdx_formula.ql.data.sources.tencent_quote import TencentQuoteSource
+
+    return TencentQuoteSource()
+
+
 def default_registry() -> dict[str, Callable[[], DataSource]]:
     return {
         "baostock": _baostock,
         "akshare_em": _akshare_em,
         "akshare_sina": _akshare_sina,
         "akshare_tx": _akshare_tx,
+        "tencent_quote": _tencent_quote,
     }

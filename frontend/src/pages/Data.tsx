@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { SyncHint } from '@/custom/tdx-formula/SyncHint'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -613,6 +614,7 @@ export function Data() {
         subtitle="本地数据画像 · 同步状态 · 历史记录"
         right={
           <div className="flex items-center gap-3">
+            <SyncHint provider={activeProvider} />
             <button
               onClick={() => adjGate.guard(() => startSync.mutate())}
               disabled={isStarting}

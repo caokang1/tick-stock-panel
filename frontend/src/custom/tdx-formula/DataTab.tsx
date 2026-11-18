@@ -391,7 +391,7 @@ function ScheduleSection() {
             {error && <ErrorNote>{error}</ErrorNote>}
             <p className={NOTE}>
               每个交易日到这个时间自动更新当天的行情，然后生成提醒；只在 TSP 运行时执行，更新失败会每半小时再试一次。
-              股市 15:00 收盘，数据来源要到 {data.run_time_min} 之后才有当天完整的行情，所以不能设得更早。
+              股市 15:00 收盘，这里把 {data.run_time_min} 之后算作当天的行情已经齐了，所以不能设得更早。
             </p>
             <label className="flex items-center gap-2 text-xs text-secondary">
               <input

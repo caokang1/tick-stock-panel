@@ -407,7 +407,8 @@ def _run_update(router: Router, day: date | None, report: UpdateReport) -> None:
 
     notes: list[str] = []
     for d in days:
-        snapshot = router.fetch(Capability.MARKET_SNAPSHOT, day=d)
+        # 首选来源当天的数据还没入库时给的是空表：这时接着问下一个来源，而不是直接放弃
+        snapshot = router.fetch(Capability.MARKET_SNAPSHOT, day=d, accept_empty=False)
         if snapshot.empty:
             notes.append(f"{d} 的行情来源还没有入库，稍后再试")
             break
