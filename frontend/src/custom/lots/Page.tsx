@@ -14,6 +14,7 @@ import { DateShortcuts } from '@/components/DateShortcuts'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { toNavItems } from '@/lib/listNav'
 import { boardTag } from '@/components/stock-table/primitives'
+import { fetchHkQuotes, fxOf, hkKeys, hkSymbolFrom, isHk } from './hk'
 
 const emptyDraft = (): Lot => ({
   id: '',
@@ -40,16 +41,27 @@ function RemainingDays({ remind }: { remind?: string | null }) {
 
 /** 成本 vs 现价的盈亏% (纯价格比例, 无数量参与) */
 /** 市值 = 数量 × 现价; 没填数量或没有现价时算不出来 */
-function marketValue(qty: number, close?: number): number | null {
-  return qty > 0 && close != null && Number.isFinite(close) ? qty * close : null
+/** fx: 折成人民币乘的数 (A 股 1, 港股是汇率; null = 没有汇率, 算不出) */
+function marketValue(qty: number, close?: number, fx: number | null = 1): number | null {
+  return qty > 0 && close != null && Number.isFinite(close) && fx != null ? qty * close * fx : null
 }
 
 function fmtMarketValue(v: number | null): string {
   return v == null ? '—' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-function CostPnL({ close, cost }: { close?: number; cost: number }) {
-  if (close == null || !(cost > 0)) return <span className="text-muted/60">—</span>
+function CostPnL({ close, cost, qty, fx = 1 }: { close?: number; cost: number; qty: number; fx?: number | null }) {
+  if (close == null || !cost) return <span className="text-muted/60">—</span>
+  // 成本为负 (落袋的盈利已超过本金): 比例没有意义, 改成显示盈亏金额
+  if (cost < 0) {
+    if (!(qty > 0) || fx == null) return <span className="text-muted/60">—</span>
+    const amount = qty * (close - cost) * fx
+    return (
+      <span className={cn('font-mono', priceColorClass(amount))} title="成本为负, 无法算比例, 这里是盈亏金额">
+        {amount >= 0 ? '+' : ''}{fmtMarketValue(amount)}
+      </span>
+    )
+  }
   const pnl = (close - cost) / cost
   return <span className={cn('font-mono', priceColorClass(pnl))}>{fmtPct(pnl)}</span>
 }
@@ -65,21 +77,35 @@ export function Lots() {
   const lotsQuery = useQuery({ queryKey: QK.lots, queryFn: api.lotsList })
   const lots = lotsQuery.data?.lots ?? []
 
-  const allSymbols = useMemo(() => Array.from(new Set(lots.map(l => l.symbol))), [lots])
+  // 港股不在面板的 A 股数据里: 名称和现价单独从港股报价取, 不参与下面的 A 股查询
+  const allSymbols = useMemo(() => Array.from(new Set(lots.map(l => l.symbol).filter(s => !isHk(s)))), [lots])
+  const hkSymbols = useMemo(() => Array.from(new Set(lots.map(l => l.symbol).filter(isHk))).sort(), [lots])
+  const hkQuery = useQuery({
+    queryKey: hkKeys.quotes(hkSymbols),
+    queryFn: () => fetchHkQuotes(hkSymbols),
+    enabled: hkSymbols.length > 0,
+    // 跟着实时行情开关: 开着按同一个间隔刷新, 关着不刷新
+    refetchInterval: q => (q.state.data?.live ? Math.max(10, q.state.data.interval) * 1000 : false),
+  })
+  const hk = hkQuery.data
   const namesQuery = useQuery({
     queryKey: QK.instrumentNames(allSymbols),
     queryFn: () => api.instrumentNames(allSymbols),
     enabled: allSymbols.length > 0,
     staleTime: 300000,
   })
-  const symbolNames = namesQuery.data?.names ?? {}
+  const symbolNames = useMemo(() => {
+    const names: Record<string, string> = { ...(namesQuery.data?.names ?? {}) }
+    for (const q of Object.values(hk?.items ?? {})) if (q.name) names[q.symbol] = q.name
+    return names
+  }, [namesQuery.data, hk])
 
   // 9999 哨兵: 未记买入日期的排最后
   const sortedLots = useMemo(() => {
     return [...lots].sort((a, b) => (a.buy_date ?? '9999-12-31').localeCompare(b.buy_date ?? '9999-12-31'))
   }, [lots])
   const lotsNavItems = useMemo(
-    () => toNavItems(sortedLots.map(l => ({ symbol: l.symbol, name: symbolNames[l.symbol] }))),
+    () => toNavItems(sortedLots.filter(l => !isHk(l.symbol)).map(l => ({ symbol: l.symbol, name: symbolNames[l.symbol] }))),
     [sortedLots, symbolNames],
   )
 
@@ -96,8 +122,9 @@ export function Lots() {
       const last = rows[rows.length - 1]
       if (last?.close != null) m[sym] = Number(last.close)
     }
+    for (const q of Object.values(hk?.items ?? {})) m[q.symbol] = q.last // 港元
     return m
-  }, [dailyQuery.data])
+  }, [dailyQuery.data, hk])
 
   const del = useMutation({
     mutationFn: api.lotDelete,
@@ -178,20 +205,21 @@ export function Lots() {
                       <tr key={lot.id} className="border-b border-border/40 last:border-0 hover:bg-elevated/40">
                         <td className="px-4 py-2.5">
                           <button
-                            onClick={() => setPreviewSymbol(lot.symbol)}
-                            title={`查看 ${lot.symbol} 日K`}
+                            onClick={() => { if (!isHk(lot.symbol)) setPreviewSymbol(lot.symbol) }}
+                            title={isHk(lot.symbol) ? '港股: 只有报价, 没有 K 线; 成本和现价是港元, 市值折成人民币' : `查看 ${lot.symbol} 日K`}
                             className="inline-flex items-center gap-1.5 min-w-0 hover:bg-elevated/50 rounded px-0.5 py-0.5 transition-colors cursor-pointer"
                           >
                             <span className="font-mono font-medium text-foreground">{lot.symbol}</span>
+                            {isHk(lot.symbol) && <span className="inline-flex items-center justify-center rounded px-1 text-[9px] font-bold leading-tight border text-sky-400 bg-sky-400/12 border-sky-400/25">港</span>}
                             {(() => { const b = boardTag(lot.symbol); return b && <span className={`inline-flex items-center justify-center rounded px-1 text-[9px] font-bold leading-tight border ${b.color}`}>{b.label}</span> })()}
                             {symbolNames[lot.symbol] && <span className="text-secondary truncate max-w-28">{symbolNames[lot.symbol]}</span>}
                           </button>
                         </td>
                         <td className="px-2 py-2.5 text-right font-mono text-secondary">{lot.qty}</td>
-                        <td className="px-2 py-2.5 text-right font-mono text-foreground">{lot.cost_price > 0 ? lot.cost_price : '—'}</td>
-                        <td className="px-2 py-2.5 text-right font-mono text-secondary">{lastPrices[lot.symbol] != null ? fmtPrice(lastPrices[lot.symbol]) : '—'}</td>
-                        <td className="px-2 py-2.5 text-right font-mono tabular-nums text-foreground">{fmtMarketValue(marketValue(lot.qty, lastPrices[lot.symbol]))}</td>
-                        <td className="px-2 py-2.5 text-right"><CostPnL close={lastPrices[lot.symbol]} cost={lot.cost_price} /></td>
+                        <td className="px-2 py-2.5 text-right font-mono text-foreground">{lot.cost_price ? `${isHk(lot.symbol) ? 'HK$' : ''}${lot.cost_price}` : '—'}</td>
+                        <td className="px-2 py-2.5 text-right font-mono text-secondary">{lastPrices[lot.symbol] != null ? `${isHk(lot.symbol) ? 'HK$' : ''}${fmtPrice(lastPrices[lot.symbol], isHk(lot.symbol) ? 3 : 2)}` : '—'}</td>
+                        <td className="px-2 py-2.5 text-right font-mono tabular-nums text-foreground">{fmtMarketValue(marketValue(lot.qty, lastPrices[lot.symbol], fxOf(lot.symbol, hk?.rate)))}</td>
+                        <td className="px-2 py-2.5 text-right"><CostPnL close={lastPrices[lot.symbol]} cost={lot.cost_price} qty={lot.qty} fx={fxOf(lot.symbol, hk?.rate)} /></td>
                         <td className="px-2 py-2.5 text-right font-mono text-bull">{lot.target_pct > 0 ? `${lot.target_pct}%` : '—'}</td>
                         <td className="px-2 py-2.5 text-right font-mono text-bear">{lot.stop_pct > 0 ? `${lot.stop_pct}%` : '—'}</td>
                         <td className="px-2 py-2.5 text-muted">{lot.buy_date || '—'}</td>
@@ -241,11 +269,17 @@ export function Lots() {
                       <td className="px-4 py-2 text-muted" colSpan={4}>市值合计</td>
                       <td className="px-2 py-2 text-right font-mono font-semibold tabular-nums text-foreground">
                         {fmtMarketValue(sortedLots.reduce<number | null>((sum, lot) => {
-                          const v = marketValue(lot.qty, lastPrices[lot.symbol])
+                          const v = marketValue(lot.qty, lastPrices[lot.symbol], fxOf(lot.symbol, hk?.rate))
                           return v == null ? sum : (sum ?? 0) + v
                         }, null))}
                       </td>
-                      <td colSpan={7} />
+                      <td className="px-2 py-2 text-muted" colSpan={7}>
+                        {hkSymbols.length > 0 && (
+                          hk?.rate
+                            ? `港股按 1 港元 = ${hk.rate.toFixed(4)} 人民币折算 · 港股报价 ${hk.fetched_at ?? '—'}${hk.live ? '' : ' (实时行情关着, 收盘后更新一次)'}${hk.error ? ` · 这次没取到: ${hk.error}` : ''}`
+                            : hkQuery.isLoading ? '港股报价加载中…' : `港股报价还没取到${hk?.error ? `: ${hk.error}` : hkQuery.isError ? ', 请稍后刷新' : ''}`
+                        )}
+                      </td>
                     </tr>
                   </tfoot>
                 </table>
@@ -302,6 +336,8 @@ function LotDialog({ lot, onClose }: { lot: Lot; onClose: () => void }) {
     enabled: symbolQuery.trim().length > 0,
   })
 
+  const hkCandidate = hkSymbolFrom(symbolQuery)
+
   const save = useMutation({
     mutationFn: (vals: Partial<Lot>) => api.lotSave({ ...draft, ...vals, symbol: draft.symbol.trim() }),
     onSuccess: () => {
@@ -327,12 +363,15 @@ function LotDialog({ lot, onClose }: { lot: Lot; onClose: () => void }) {
       stop_pct: parseNum(nums.stop_pct),
       lead_days: Math.floor(parseNum(nums.lead_days)),
     }
-    if ((vals.cost_price ?? 0) < 0 || (vals.qty ?? 0) < 0 || (vals.target_pct ?? 0) < 0 || (vals.stop_pct ?? 0) < 0 || (vals.lead_days ?? 0) < 0) {
-      return setError('成本价 / 数量 / 百分比 / 提前天数不能为负数')
+    if ((vals.qty ?? 0) < 0 || (vals.target_pct ?? 0) < 0 || (vals.stop_pct ?? 0) < 0 || (vals.lead_days ?? 0) < 0) {
+      return setError('数量 / 百分比 / 提前天数不能为负数')
     }
     // 成本价、止盈、止损、到期日都可以先不填 (只登记持仓, 不产生提醒); 但设了止盈/止损就得有成本价
+    if (isHk(draft.symbol) && ((vals.target_pct ?? 0) > 0 || (vals.stop_pct ?? 0) > 0)) {
+      return setError('港股只有报价, 面板监控不到, 不能设止盈止损 (到期提醒可以设)')
+    }
     if (((vals.target_pct ?? 0) > 0 || (vals.stop_pct ?? 0) > 0) && !((vals.cost_price ?? 0) > 0)) {
-      return setError('设了止盈% 或止损% 时必须填成本价')
+      return setError('设了止盈% 或止损% 时必须填大于 0 的成本价')
     }
     save.mutate(vals)
   }
@@ -360,14 +399,23 @@ function LotDialog({ lot, onClose }: { lot: Lot; onClose: () => void }) {
               <input
                 value={symbolQuery}
                 onChange={e => setSymbolQuery(e.target.value)}
-                placeholder="搜索代码或名称..."
+                placeholder="搜索代码或名称; 港股输 5 位代码, 如 00981"
                 autoFocus
                 className="h-9 w-full rounded-btn border border-border bg-base pl-8 pr-3 text-xs text-foreground focus:outline-none focus:border-accent/50"
               />
               <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted" />
-              {symbolSearch.data && symbolSearch.data.results.length > 0 && (
+              {(hkCandidate || (symbolSearch.data && symbolSearch.data.results.length > 0)) && (
                 <div className="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded border border-border bg-surface shadow-lg">
-                  {symbolSearch.data.results.map(r => (
+                  {hkCandidate && (
+                    <button
+                      onClick={() => { setDraft(d => ({ ...d, symbol: hkCandidate })); setSymbolQuery('') }}
+                      className="block w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-elevated cursor-pointer"
+                    >
+                      <span className="font-mono text-foreground/80">{hkCandidate}</span>
+                      <span className="ml-1.5 text-muted">按港股登记 (成本填港元)</span>
+                    </button>
+                  )}
+                  {(symbolSearch.data?.results ?? []).map(r => (
                     <button
                       key={r.symbol}
                       onClick={() => { setDraft(d => ({ ...d, symbol: r.symbol })); setSymbolQuery('') }}
@@ -389,8 +437,8 @@ function LotDialog({ lot, onClose }: { lot: Lot; onClose: () => void }) {
             <input type="number" min={0} placeholder="0" {...numField('qty')} className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
           </label>
           <label className="space-y-1.5">
-            <span className="text-[11px] text-muted">成本价 (可先不填)</span>
-            <input type="number" min={0} step="any" placeholder="0" {...numField('cost_price')} className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
+            <span className="text-[11px] text-muted">成本价 (可先不填, 可为负)</span>
+            <input type="number" step="any" placeholder="0" {...numField('cost_price')} className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
           </label>
           <label className="space-y-1.5">
             <span className="text-[11px] text-muted">止盈%</span>

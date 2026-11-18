@@ -87,7 +87,8 @@ def test_validate_lot_rules_and_errors():
     lots_domain.validate_lot(lots_domain.normalize_lot(_lot()))
     for overrides in (
         {"symbol": " "},
-        {"cost_price": -1},
+        {"cost_price": -1},  # 负成本配不了按比例的止盈止损
+        {"cost_price": float("nan")},
         {"cost_price": 0},  # 默认批次设了止盈止损, 没有成本就算不出触发价
         {"qty": -1},
         {"target_pct": -1},
@@ -206,3 +207,11 @@ def test_upsert_lot_invalid_returns_400(tmp_path, monkeypatch):
         lots_api.upsert_lot(lots_api.LotModel(**_lot(cost_price=0)), request)
     assert ei.value.status_code == 400
     assert "成本价" in str(ei.value.detail)  # 默认批次设了止盈止损, 没有成本就算不出触发价
+
+
+def test_negative_cost_is_allowed_without_target_or_stop():
+    """券商摊薄成本为负 (落袋盈利超过本金) 时也能登记, 只是不派生止盈止损规则。"""
+    lot = {"id": "lot_neg", "symbol": "510300.SH", "qty": 100, "cost_price": -52.152,
+           "target_pct": 0, "stop_pct": 0, "lead_days": 1}
+    lots_domain.validate_lot(lot)
+    assert lots_domain.lot_to_rules(lots_domain.normalize_lot(lot)) == (None, None)

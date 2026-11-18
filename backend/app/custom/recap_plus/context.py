@@ -127,10 +127,10 @@ def read_holdings(data_dir: Path) -> list[dict[str, Any]]:
         qty, cost = _num(lot.get("qty")) or 0.0, _num(lot.get("cost_price")) or 0.0
         item = merged.setdefault(symbol, {"qty": 0.0, "amount": 0.0, "costed": 0.0})
         item["qty"] += qty
-        if qty > 0 and cost > 0:
+        if qty > 0 and cost != 0:  # 成本可以是负数（落袋盈利超过本金）
             item["amount"] += qty * cost
             item["costed"] += qty
-        elif cost > 0 and item["costed"] == 0:
+        elif cost != 0 and item["costed"] == 0:
             item["amount"], item["costed"] = cost, 1.0  # 没填数量时也把成本留下
     out = []
     for symbol, item in list(merged.items())[:MAX_HOLDINGS]:
@@ -256,9 +256,45 @@ def _stock_margin_text(rows: list[dict[str, Any]] | None) -> str:
     return text
 
 
+def read_hk_quotes(data_dir: Path) -> dict[str, Any]:
+    """港股报价扩展存在本机的最近一次报价和汇率；这里只读文件，不联网。"""
+    from app.custom.hk_quotes.routes import read_saved
+
+    return read_saved(data_dir / "user_data" / "extensions" / "hk_quotes" / "quotes.json")
+
+
+def _hk_holding(h: dict[str, Any], hk: dict[str, Any]) -> tuple[list[str], float, float]:
+    """一只港股持仓的几行，以及折成人民币的市值和成本（算不出来的是 0）。面板没有港股的 K 线和资金数据。"""
+    s = h["symbol"]
+    quote, rate = (hk.get("items") or {}).get(s), _num(hk.get("rate"))
+    if not quote or not _num(quote.get("last")):
+        return ["", f"### {s}（港股）", "- 还没有取到这只港股的报价"], 0.0, 0.0
+    last = float(quote["last"])
+    lines = ["", f"### {quote.get('name') or s}（{s}，港股，价格单位港元）"]
+    position = f"- 持仓：{h['qty']:g} 股"
+    value = cost = 0.0
+    if rate:
+        value = h["qty"] * last * rate
+        position += f"，市值折人民币 {value / 1e4:.2f} 万（1 港元 = {rate:.4f} 人民币）"
+    if h["cost"] != 0:
+        position += f"，成本 {h['cost']:g} 港元"
+        if h["cost"] > 0:
+            position += f"，浮动盈亏 {pct(last / h['cost'] - 1)}"
+        if rate:
+            cost = h["qty"] * h["cost"] * rate
+            position += f"（折人民币 {wan(value - cost)}）"
+    else:
+        position += "，成本没有登记"
+    lines.append(position)
+    change = _num(quote.get("change_pct"))
+    lines.append(f"- 报价：{last:g} 港元，较前收 {pct(change) if change is not None else '—'}，"
+                 f"报价时间 {quote.get('time') or '—'}（面板没有港股的 K 线、资金和估值数据）")
+    return lines, value, cost
+
+
 def _holding_blocks(holdings: list[dict[str, Any]], days: list[tuple[str, Any]], names: Any,
                     industry: dict[str, str], concept: dict[str, str], peers: dict[str, list[str]],
-                    net: dict[str, Any], as_of: str) -> list[str]:
+                    net: dict[str, Any], as_of: str, hk: dict[str, Any] | None = None) -> list[str]:
     today = days[-1][1]
     prev = days[-2][1] if len(days) > 1 else None
     change = _change(today, prev)
@@ -275,6 +311,11 @@ def _holding_blocks(holdings: list[dict[str, Any]], days: list[tuple[str, Any]],
     total_value = total_cost = 0.0
     for h in holdings:
         s = h["symbol"]
+        if s.endswith(".HK"):
+            block, value, cost = _hk_holding(h, hk or {})
+            lines += block
+            total_value, total_cost = total_value + value, total_cost + cost
+            continue
         lines += ["", f"### {name(s)}（{s}）"]
         if s not in today.index:
             lines.append("- 当天没有这只股票的行情（停牌或数据缺失）")
@@ -284,8 +325,10 @@ def _holding_blocks(holdings: list[dict[str, Any]], days: list[tuple[str, Any]],
         value = h["qty"] * close
         lines.append(f"- 所属：行业 {industry.get(s, '—')}；概念 {concept.get(s, '—')}")
         position = f"- 持仓：{h['qty']:g} 股，市值 {value / 1e4:.2f} 万"
-        if h["cost"] > 0:
-            position += f"，成本 {h['cost']:g}，浮动盈亏 {wan(h['qty'] * (close - h['cost']))}（{pct(close / h['cost'] - 1)}）"
+        if h["cost"] != 0:
+            position += f"，成本 {h['cost']:g}，浮动盈亏 {wan(h['qty'] * (close - h['cost']))}"
+            # 成本为负时比例没有意义，只给金额
+            position += f"（{pct(close / h['cost'] - 1)}）" if h["cost"] > 0 else "（成本为负，已收回全部本金）"
             total_cost += h["qty"] * h["cost"]
         else:
             position += "，成本没有登记"
@@ -335,13 +378,15 @@ def build(data_dir: Path, root: Path, as_of: str) -> str:
     peers = load_config(root)["peers"]
     held = [h["symbol"] for h in holdings]
     others = [p for s in held for p in peers.get(s, [])]
-    net = remote.collect(root, as_of, held, others)
+    # 港股没有面板里的资金、两融、估值数据，不拿去问
+    net = remote.collect(root, as_of, [s for s in held if not s.endswith(".HK")], others)
 
     lines = [f"以下是 {as_of} 收盘后的补充材料。所有数字都来自这里，没有给出的数据请写“未取得”，不要推测或编造。", ""]
     lines += _market_blocks(today, prev, names, industry)
     lines += _margin_block(net.get("market_margin"), net["errors"].get("全市场两融"))
     if holdings:
-        lines += _holding_blocks(holdings, days, names, industry, concept, peers, net, as_of)
+        lines += _holding_blocks(holdings, days, names, industry, concept, peers, net, as_of,
+                                 read_hk_quotes(data_dir))
     else:
         lines += ["", "## 持仓明细", "（“持仓提醒”里还没有登记持仓，持仓复盘一节请写“未登记持仓”。）"]
     if holdings:

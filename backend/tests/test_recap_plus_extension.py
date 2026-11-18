@@ -257,3 +257,20 @@ def test_manual_recap_fetches_todays_snapshot_only_when_it_is_missing(monkeypatc
 
     state["source"] = "freecn"
     assert sync.ensure_today(repo, types.SimpleNamespace(refresh=boom), tuesday) is False  # 出错不往外抛
+
+
+def test_hk_holding_lines_convert_to_rmb_and_handle_missing_quote():
+    from app.custom.recap_plus import context as ctx
+
+    hk = {"items": {"00981.HK": {"symbol": "00981.HK", "name": "中芯国际", "last": 50.0, "change_pct": 0.01,
+                                 "time": "2026-11-18 16:08:00"}}, "rate": 0.85}
+    lines, value, cost = ctx._hk_holding({"symbol": "00981.HK", "qty": 500, "cost": 80.0}, hk)
+    text = "\n".join(lines)
+    assert value == 500 * 50.0 * 0.85 and cost == 500 * 80.0 * 0.85
+    assert "中芯国际" in text and "-37.50%" in text and "-1.27 万" in text and "港元" in text
+
+    lines, value, cost = ctx._hk_holding({"symbol": "09981.HK", "qty": 2000, "cost": 19.26}, hk)
+    assert (value, cost) == (0.0, 0.0) and "还没有取到" in "\n".join(lines)
+
+    lines, value, cost = ctx._hk_holding({"symbol": "00981.HK", "qty": 500, "cost": 80.0}, {**hk, "rate": None})
+    assert (value, cost) == (0.0, 0.0) and "-37.50%" in "\n".join(lines)

@@ -34,10 +34,11 @@ def validate_lot(lot: dict) -> None:
     if not (lot.get("symbol") or "").strip():
         raise ValueError("symbol 不能为空")
     cost = lot.get("cost_price")
-    # 成本价可以先不填 (0 = 还没填): 只登记持仓、之后再补成本。但设了止盈/止损就必须有成本,
-    # 否则触发价会算成 0, 规则永远不触发或一上来就触发。
-    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0:
-        raise ValueError("cost_price 不能为负数")
+    # 成本价可以先不填 (0 = 还没填): 只登记持仓、之后再补成本。
+    # 成本价可以是负数: 券商的摊薄成本在落袋的盈利超过本金后就是负的。
+    # 但设了止盈/止损就必须有正的成本, 否则按比例算不出有意义的触发价。
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost != cost:
+        raise ValueError("cost_price 必须是数字")
     for key, label in (("qty", "数量"), ("target_pct", "止盈%"), ("stop_pct", "止损%")):
         v = lot.get(key, 0)
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
@@ -53,7 +54,7 @@ def validate_lot(lot: dict) -> None:
             except ValueError:
                 raise ValueError(f"{label} 必须是 YYYY-MM-DD: {raw!r}") from None
     if (lot.get("target_pct", 0) > 0 or lot.get("stop_pct", 0) > 0) and cost <= 0:
-        raise ValueError("设了止盈% 或止损% 时必须填成本价")
+        raise ValueError("设了止盈% 或止损% 时必须填大于 0 的成本价")
     # 止盈 / 止损 / 到期日都不设也可以保存: 这时只是登记持仓, 不派生监控规则 (lot_to_rules 返回 None)。
 
 
