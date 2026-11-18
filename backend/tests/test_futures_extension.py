@@ -72,9 +72,13 @@ def test_parse_kline_accepts_both_field_styles_and_limits():
     assert sina.parse_kline("不是数据", 10) == []
 
 
-def test_cache_waits_for_interval_and_keeps_last_value_on_failure():
-    now = [0.0]
-    cache = routes.Cache(30, clock=lambda: now[0])
+def make_store(tmp_path, state, now):
+    return routes.Store(lambda: tmp_path, lambda: state["live"], lambda: state["interval"], clock=lambda: now[0])
+
+
+def test_store_waits_for_interval_and_keeps_last_value_on_failure(tmp_path):
+    now, state = [0.0], {"live": True, "interval": 30}
+    store = make_store(tmp_path, state, now)
     calls = []
 
     def load():
@@ -83,45 +87,96 @@ def test_cache_waits_for_interval_and_keeps_last_value_on_failure():
             raise RuntimeError("断了")
         return len(calls)
 
-    assert cache.get("k", load)["value"] == 1
+    assert store.get("k", load)["value"] == 1
     now[0] = 10
-    assert cache.get("k", load)["value"] == 1 and len(calls) == 1  # 间隔内不重取
+    assert store.get("k", load)["value"] == 1 and len(calls) == 1  # 间隔内不重取
     now[0] = 31
-    failed = cache.get("k", load)
+    failed = store.get("k", load)
     assert failed["value"] == 1 and failed["error"] == "断了"  # 失败时给上一次的
     now[0] = 40
-    assert len(calls) == 2 and cache.get("k", load)["error"] == "断了" and len(calls) == 2  # 失败后也等满间隔
+    assert store.get("k", load)["error"] == "断了" and len(calls) == 2  # 失败后也等满间隔
     now[0] = 62
-    ok = cache.get("k", load)
-    assert ok["value"] == 3 and ok["error"] is None
+    ok = store.get("k", load)
+    assert ok["value"] == 3 and ok["error"] is None and ok["live"] is True
+
+
+def test_store_follows_the_interval_setting(tmp_path):
+    now, state = [0.0], {"live": True, "interval": 60}
+    store = make_store(tmp_path, state, now)
+    calls = []
+    load = lambda: calls.append(1) or len(calls)  # noqa: E731
+    store.get("k", load)
+    now[0] = 45
+    store.get("k", load)
+    assert len(calls) == 1
+    state["interval"] = 30  # 设置改小后立即按新的算
+    store.get("k", load)
+    assert len(calls) == 2
+
+
+def test_store_never_fetches_when_realtime_is_off_and_serves_saved_data(tmp_path):
+    now, state = [0.0], {"live": False, "interval": 30}
+    calls = []
+    load = lambda: calls.append(1) or {"n": len(calls)}  # noqa: E731
+
+    empty = make_store(tmp_path, state, now).get("k", load)
+    assert empty["value"] is None and empty["live"] is False and calls == []  # 关着：不取
+
+    state["live"] = True
+    first = make_store(tmp_path, state, now).get("k", load)
+    assert first["value"] == {"n": 1}
+
+    state["live"] = False
+    now[0] = 9999
+    again = make_store(tmp_path, state, now).get("k", load)  # 新建一个，相当于重启
+    assert again["value"] == {"n": 1} and again["fetched_at"] == first["fetched_at"]
+    assert again["live"] is False and again["error"] is None and len(calls) == 1
+
+
+def test_store_ignores_a_broken_file(tmp_path):
+    (tmp_path / "k.json").write_text("坏的", encoding="utf-8")
+    store = make_store(tmp_path, {"live": False, "interval": 30}, [0.0])
+    assert store.get("k", lambda: 1)["value"] is None
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     urls = []
+    state = {"live": True, "interval": 30}
 
     def fake_call(url, what):
         urls.append(url)
         return QUOTES if "hq.sinajs.cn" in url else 'var _x=([{"d":"2026-11-17","o":"1","h":"2","l":"1","c":"2"}]);'
 
     monkeypatch.setattr(sina, "_call", fake_call)
+    monkeypatch.setattr(routes, "interval", lambda: state["interval"])
     app = FastAPI()
-    app.include_router(routes.build_router())
-    return TestClient(app), urls
+    app.include_router(routes.build_router(routes.Store(lambda: tmp_path, lambda: state["live"], lambda: state["interval"])))
+    return TestClient(app), urls, state
 
 
 def test_quotes_endpoint_asks_once_for_everything(client):
-    http, urls = client
+    http, urls, _ = client
     body = http.get("/api/custom/futures/quotes").json()
     assert [r["code"] for r in body["items"]] == ["IF0", "AU0", "GC"]
-    assert body["error"] is None and body["fetched_at"]
+    assert body["error"] is None and body["fetched_at"] and body["live"] is True and body["interval"] == 30
     http.get("/api/custom/futures/quotes")
-    assert len(urls) == 1  # 第二次用的是缓存
+    assert len(urls) == 1  # 第二次用的是存下来的
     assert all(code in urls[0] for code in ("nf_IF0", "nf_AU0", "hf_XAU", "sh000852"))
 
 
+def test_endpoints_do_not_go_online_when_realtime_is_off(client):
+    http, urls, state = client
+    state["live"] = False
+    body = http.get("/api/custom/futures/quotes").json()
+    assert body["items"] == [] and body["live"] is False and body["error"] is None
+    kline = http.get("/api/custom/futures/kline", params={"code": "AU0"}).json()
+    assert kline["bars"] == [] and kline["live"] is False
+    assert urls == []
+
+
 def test_kline_endpoint(client):
-    http, urls = client
+    http, urls, _ = client
     body = http.get("/api/custom/futures/kline", params={"code": "AU0"}).json()
     assert body["name"] == "沪金" and body["bars"][0]["close"] == 2.0
     assert "InnerFuturesNewService" in urls[-1]

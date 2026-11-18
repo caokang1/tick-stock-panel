@@ -33,8 +33,10 @@ export interface Quotes {
   fetched_at: string | null
   /** 这次没取到时的原因（这时 items 是上次的） */
   error: string | null
-  /** 后端两次取数之间至少隔多少秒 */
+  /** 两次取数之间至少隔多少秒：和股票的全市场快照是同一个设置 */
   interval: number
+  /** 面板的实时行情开关是不是开着；关着时不联网，items 是上一次存下来的 */
+  live: boolean
 }
 
 export interface Bar {
@@ -49,7 +51,9 @@ export interface Kline {
   code: string
   name: string
   bars: Bar[]
+  fetched_at: string | null
   error: string | null
+  live: boolean
 }
 
 async function get<T>(url: string): Promise<T> {

@@ -1,6 +1,7 @@
 /**
  * 期货：股指期货、贵金属、有色、能源黑色、国债和外盘主要品种的行情，点一行看日线。
- * 只展示，不参与选股、回测和提醒。数据来自新浪财经的公开接口，页面开着时每 30 秒取一次。
+ * 只展示，不参与选股、回测和提醒。数据来自新浪财经的公开接口。
+ * 跟着面板的“实时行情”开关走：开着才更新，间隔和股票行情用同一个设置；关着时看到的是上一次的数据。
  */
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -71,9 +72,10 @@ function KlineChart({ bars }: { bars: Bar[] }) {
   )
 }
 
-function Detail({ row }: { row: FutureQuote }) {
+function Detail({ row, live }: { row: FutureQuote; live: boolean }) {
   const { data, isLoading, error } = useQuery({
-    queryKey: futuresKeys.kline(row.code),
+    // 开关的状态放进 key：打开实时行情后重新问一次，才会去取还没存过的日线
+    queryKey: [...futuresKeys.kline(row.code), live],
     queryFn: () => futuresApi.kline(row.code),
     staleTime: 10 * 60 * 1000,
   })
@@ -88,7 +90,9 @@ function Detail({ row }: { row: FutureQuote }) {
       {isLoading && <p className="py-10 text-center text-xs text-muted">正在取日线…</p>}
       {error && <p className="py-10 text-center text-xs text-bear">{(error as Error).message}</p>}
       {data && data.bars.length === 0 && (
-        <p className="py-10 text-center text-xs text-muted">{data.error ?? '这个品种暂时没有日线数据。'}</p>
+        <p className="py-10 text-center text-xs text-muted">
+          {data.error ?? (data.live ? '这个品种暂时没有日线数据。' : '这个品种的日线还没有取过，打开实时行情后再点开就有了。')}
+        </p>
       )}
       {data && data.bars.length > 0 && <KlineChart bars={data.bars} />}
     </section>
@@ -99,7 +103,8 @@ export function Futures() {
   const { data, isLoading, error } = useQuery({
     queryKey: futuresKeys.quotes,
     queryFn: futuresApi.quotes,
-    refetchInterval: 30 * 1000,
+    // 开着：按设置里的间隔来问；关着：一分钟看一次开关有没有打开（后端这时不联网）
+    refetchInterval: query => (query.state.data?.live ? Math.max(15, query.state.data.interval) : 60) * 1000,
     staleTime: 0,
   })
   const [picked, setPicked] = useState<string | null>(null)
@@ -111,8 +116,11 @@ export function Futures() {
       <PageHeader title="期货" subtitle="股指期货、金银铜和外盘主要品种的行情，点一行看日线 · 只展示，不参与选股和回测" />
       <div className="space-y-4 p-4">
       <p className="text-[11px] text-muted">
-        数据来自新浪财经公开行情，页面开着时每 30 秒更新一次。国内品种是主力连续合约，涨跌按昨结算价计算。
-        {data?.fetched_at && ` 上次更新 ${data.fetched_at.slice(11)}。`}
+        数据来自新浪财经公开行情。国内品种是主力连续合约，涨跌按昨结算价计算。
+        {data && (data.live
+          ? ` 实时行情已打开，每 ${data.interval} 秒更新一次（和股票行情同一个设置）。`
+          : ' 实时行情开关关着，期货不更新；打开左下角的实时行情开关后和股票一起更新。')}
+        {data?.fetched_at && ` 数据时间 ${data.fetched_at.slice(5, 16)}。`}
       </p>
       {data?.error && (
         <p className="rounded-card border border-border bg-surface px-3 py-2 text-xs text-bear">
@@ -122,7 +130,9 @@ export function Futures() {
       {isLoading && <p className="py-10 text-center text-xs text-muted">正在取行情…</p>}
       {error && <p className="py-10 text-center text-xs text-bear">{(error as Error).message}</p>}
       {data && items.length === 0 && !data.error && (
-        <p className="py-10 text-center text-xs text-muted">暂时没有行情。</p>
+        <p className="py-10 text-center text-xs text-muted">
+          {data.live ? '暂时没有行情。' : '还没有取过期货行情。打开左下角的实时行情开关后，这里会和股票行情一起更新。'}
+        </p>
       )}
 
       {items.length > 0 && (
@@ -175,7 +185,7 @@ export function Futures() {
               )
             })}
           </div>
-          {current && <div className="min-w-0 xl:sticky xl:top-4 xl:self-start"><Detail row={current} /></div>}
+          {current && <div className="min-w-0 xl:sticky xl:top-4 xl:self-start"><Detail row={current} live={data?.live ?? false} /></div>}
         </div>
       )}
       </div>
