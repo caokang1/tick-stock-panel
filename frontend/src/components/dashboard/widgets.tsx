@@ -19,9 +19,12 @@ import { boardTag } from '@/components/stock-table/primitives'
 import { toNavItems, type NavItem } from '@/lib/listNav'
 import { fmtPrice, fmtIndexPct, fmtStockPct, pctClass, scoreColor as scoreColorValue, SectionTitle } from './shared'
 
-// 切股导航列表构建 (与列表展示行一致: StockList 只显示前 8)
+// 切股导航列表构建 (与列表展示行一致: StockList 只显示前 10)
+/** 首页各榜单显示的名次数 */
+export const LIST_TOP = 10
+
 export function stockListNav(rows: MarketSnapshotRow[]): NavItem[] {
-  return toNavItems(rows.slice(0, 8))
+  return toNavItems(rows.slice(0, LIST_TOP))
 }
 export function rankNav(rank?: OverviewMarket['concept_rank']): NavItem[] {
   const leaders = [...(rank?.leading ?? []), ...(rank?.lagging ?? [])]
@@ -203,7 +206,7 @@ export function LadderMini({ limit }: { limit: OverviewMarket['limit'] }) {
 
 // ===== 四大榜单 =====
 export function StockList({ title, rows, mode, onStockClick, activeSymbol }: {
-  title: string; rows: MarketSnapshotRow[]; mode: 'gain' | 'loss' | 'amount' | 'active';
+  title: string; rows: MarketSnapshotRow[]; mode: 'cap' | 'amount' | 'active';
   onStockClick?: (symbol: string, name?: string) => void;
   activeSymbol?: string;
 }) {
@@ -211,10 +214,10 @@ export function StockList({ title, rows, mode, onStockClick, activeSymbol }: {
     <div className="rounded-card border border-border bg-surface/80 p-1.5 shadow-[0_1px_2px_hsl(var(--border)/0.4)] backdrop-blur-sm transition-shadow hover:shadow-[0_2px_8px_hsl(var(--border)/0.5)]">
       <div className="mb-1 flex items-center justify-between">
         <h3 className="text-xs font-semibold text-foreground">{title}</h3>
-        <span className="text-[9px] text-muted">TOP {Math.min(rows.length, 8)}</span>
+        <span className="text-[9px] text-muted">TOP {Math.min(rows.length, LIST_TOP)}</span>
       </div>
       <div className="space-y-1">
-        {rows.slice(0, 8).map((r, idx) => (
+        {rows.slice(0, LIST_TOP).map((r, idx) => (
           <div
             key={`${r.symbol}-${idx}`}
             className={`grid grid-cols-[18px_1fr_auto] items-center gap-1.5 rounded-md px-1.5 py-1 cursor-pointer transition-colors border ${r.symbol === activeSymbol ? 'bg-accent/10 border-accent/30' : 'bg-elevated/40 border-transparent hover:bg-elevated hover:brightness-110 hover:border-border/60'}`}
@@ -248,14 +251,56 @@ export function StockList({ title, rows, mode, onStockClick, activeSymbol }: {
                 </>
               ) : (
                 <>
-                  <div className={`font-mono text-[11px] font-semibold ${pctClass(r.change_pct)}`}>{fmtStockPct(r.change_pct)}</div>
-                  <div className="font-mono text-[9px] text-muted">{fmtPrice(r.close)}</div>
+                  <div className="font-mono text-[11px] text-foreground">{fmtBigNum(r.market_cap)}</div>
+                  <div className={`font-mono text-[9px] ${pctClass(r.change_pct)}`}>{fmtStockPct(r.change_pct)}</div>
                 </>
               )}
             </div>
           </div>
         ))}
         {rows.length === 0 && <div className="py-5 text-center text-xs text-muted">暂无数据</div>}
+      </div>
+    </div>
+  )
+}
+
+// ===== 行业成交额榜 =====
+export function IndustryAmountList({ rows, onDimensionClick }: {
+  rows: NonNullable<OverviewMarket['industry_amount_leaders']>;
+  onDimensionClick?: (target: DimensionMembersTarget) => void;
+}) {
+  return (
+    <div className="rounded-card border border-border bg-surface/80 p-1.5 shadow-[0_1px_2px_hsl(var(--border)/0.4)] backdrop-blur-sm transition-shadow hover:shadow-[0_2px_8px_hsl(var(--border)/0.5)]">
+      <div className="mb-1 flex items-center justify-between">
+        <h3 className="text-xs font-semibold text-foreground">行业成交榜</h3>
+        <span className="text-[9px] text-muted">TOP {Math.min(rows.length, LIST_TOP)}</span>
+      </div>
+      <div className="space-y-1">
+        {rows.slice(0, LIST_TOP).map((r, idx) => {
+          const kind = r.source_field ? dimensionKindForSourceField(r.source_field) : null
+          const clickable = !!(r.source_field && kind && onDimensionClick)
+          return (
+            <div
+              key={`${r.name}-${idx}`}
+              title={clickable ? `查看「${r.name}」成分股` : undefined}
+              onClick={() => clickable && onDimensionClick!({ kind: kind!, value: r.name, sourceField: r.source_field! })}
+              className={`grid grid-cols-[18px_1fr_auto] items-center gap-1.5 rounded-md border border-transparent bg-elevated/40 px-1.5 py-1 transition-colors ${clickable ? 'cursor-pointer hover:border-border/60 hover:bg-elevated hover:brightness-110' : ''}`}
+            >
+              <span className="text-center font-mono text-[10px] text-muted">{idx + 1}</span>
+              <div className="min-w-0">
+                <div className="truncate text-[11px] text-foreground">{r.name}</div>
+                <span className="font-mono text-[9px] text-muted">
+                  {r.count}只{r.share_pct != null ? ` · 占${r.share_pct.toFixed(1)}%` : ''}
+                </span>
+              </div>
+              <div className="text-right">
+                <div className="font-mono text-[11px] text-foreground">{fmtBigNum(r.amount)}</div>
+                <div className={`font-mono text-[9px] ${pctClass(r.avg_pct)}`}>{fmtStockPct(r.avg_pct)}</div>
+              </div>
+            </div>
+          )
+        })}
+        {rows.length === 0 && <div className="py-5 text-center text-xs text-muted">暂无数据（需要先有行业分类数据）</div>}
       </div>
     </div>
   )

@@ -585,10 +585,12 @@ export interface OverviewMarket {
     dimensions?: EmotionDimensionDetail[]
     thresholds?: Record<string, number>
   }
-  top_gainers: MarketSnapshotRow[]
-  top_losers: MarketSnapshotRow[]
+  /** 总市值前十 (旧快照里没有) */
+  market_cap_leaders?: MarketSnapshotRow[]
   turnover_leaders: MarketSnapshotRow[]
   active_leaders: MarketSnapshotRow[]
+  /** 成交额最大的前十个行业; share_pct = 占全市场成交额的百分比 (旧快照里没有) */
+  industry_amount_leaders?: (OverviewDimensionRankItem & { share_pct?: number | null })[]
   concept_rank: { leading: OverviewDimensionRankItem[]; lagging: OverviewDimensionRankItem[] }
   industry_rank: { leading: OverviewDimensionRankItem[]; lagging: OverviewDimensionRankItem[] }
 }

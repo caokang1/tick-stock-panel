@@ -8,7 +8,7 @@ import type { CSSProperties } from 'react'
 import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, BarChart3, BellRing, FileText, Flame, Gauge, LineChart, Link2, Sparkles, Target, TrendingUp, TrendingDown, Coins, Repeat } from 'lucide-react'
+import { ArrowUpRight, BarChart3, BellRing, FileText, Flame, Gauge, LineChart, Link2, Sparkles, Target, Landmark, Factory, Coins, Repeat } from 'lucide-react'
 import type { AlertEvent, OverviewMarket } from '@/lib/api'
 import { fmtBigNum } from '@/lib/format'
 import type { DimensionMembersTarget } from '@/components/DimensionMembersDialog'
@@ -16,7 +16,7 @@ import { SealedBadge } from '@/components/SealedBadge'
 import { scoreColor, fmtPrice, fmtStockPct, pctClass, compactCount, SectionTitle, MiniMetric, KpiCell } from './shared'
 import { EmotionScoreConfigDialog } from './EmotionScoreConfigDialog'
 import {
-  IndexTicker, BreadthBar, DistributionBars, EmotionRadar, LadderMini, StockList, HotRankCard, MonitorWidget,
+  IndexTicker, BreadthBar, DistributionBars, EmotionRadar, LadderMini, StockList, IndustryAmountList, HotRankCard, MonitorWidget,
   stockListNav, rankNav,
 } from './widgets'
 import type { DashboardItem, WidgetType } from './layout'
@@ -216,23 +216,24 @@ export const WIDGET_DEFS: WidgetDef[] = [
     ),
   },
   {
-    id: 'gainers', label: '涨幅榜', icon: TrendingUp, minW: 2, minH: 7, defW: 3, defH: 10,
+    id: 'market-cap', label: '总市值榜', icon: Landmark, minW: 2, minH: 7, defW: 3, defH: 16,
+    render: ctx => {
+      const rows = ctx.data.market_cap_leaders ?? []
+      return (
+        <StockList title="总市值榜" rows={rows} mode="cap"
+          activeSymbol={ctx.activeSymbol('cap')}
+          onStockClick={(symbol, name) => ctx.openStock('cap', symbol, name, stockListNav(rows))} />
+      )
+    },
+  },
+  {
+    id: 'industry-amount', label: '行业成交榜', icon: Factory, minW: 2, minH: 7, defW: 2, defH: 16,
     render: ctx => (
-      <StockList title="涨幅榜" rows={ctx.data.top_gainers} mode="gain"
-        activeSymbol={ctx.activeSymbol('gain')}
-        onStockClick={(symbol, name) => ctx.openStock('gain', symbol, name, stockListNav(ctx.data.top_gainers))} />
+      <IndustryAmountList rows={ctx.data.industry_amount_leaders ?? []} onDimensionClick={ctx.openDimension} />
     ),
   },
   {
-    id: 'losers', label: '跌幅榜', icon: TrendingDown, minW: 2, minH: 7, defW: 3, defH: 10,
-    render: ctx => (
-      <StockList title="跌幅榜" rows={ctx.data.top_losers} mode="loss"
-        activeSymbol={ctx.activeSymbol('loss')}
-        onStockClick={(symbol, name) => ctx.openStock('loss', symbol, name, stockListNav(ctx.data.top_losers))} />
-    ),
-  },
-  {
-    id: 'turnover', label: '成交额榜', icon: Coins, minW: 2, minH: 7, defW: 3, defH: 10,
+    id: 'turnover', label: '成交额榜', icon: Coins, minW: 2, minH: 7, defW: 3, defH: 16,
     render: ctx => (
       <StockList title="成交额榜" rows={ctx.data.turnover_leaders} mode="amount"
         activeSymbol={ctx.activeSymbol('amount')}
@@ -240,7 +241,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
     ),
   },
   {
-    id: 'activity', label: '活跃换手', icon: Repeat, minW: 2, minH: 7, defW: 3, defH: 10,
+    id: 'activity', label: '活跃换手', icon: Repeat, minW: 2, minH: 7, defW: 3, defH: 16,
     render: ctx => (
       <StockList title="活跃换手" rows={ctx.data.active_leaders} mode="active"
         activeSymbol={ctx.activeSymbol('active')}
@@ -286,7 +287,7 @@ export function minSizeOf(t: WidgetType): { w: number; h: number } {
   return { w: d?.minW ?? 2, h: d?.minH ?? 4 }
 }
 
-/** 默认布局 — 用户定稿 v2(2026-09-27): 顶部通栏 → 中段四列等高(分布/雷达/趋势/梯队 各8行) → 双热度+右侧监控高栏 → 四榜单。
+/** 默认布局 — 用户定稿 v2(2026-09-27): 顶部通栏 → 中段四列等高(分布/雷达/趋势/梯队 各8行) → 双热度+右侧监控高栏 → 四榜单(总市值/行业成交/成交额/活跃换手, 各取前十)。
  * 坐标必须是竖直压实后的稳定形态(列内不留空隙), 否则 RGL 渲染时会自动上提,
  * 导致「恢复默认」的 JSON 等值判断永不成立、每次都落 blob 而非 null。 */
 export const DEFAULT_LAYOUT: DashboardItem[] = [
@@ -299,9 +300,9 @@ export const DEFAULT_LAYOUT: DashboardItem[] = [
   { i: 'concept-rank', t: 'concept-rank', x: 0, y: 12, w: 4, h: 9 },
   { i: 'industry-rank', t: 'industry-rank', x: 4, y: 12, w: 4, h: 9 },
   { i: 'holding-notices', t: 'holding-notices', x: 8, y: 12, w: 4, h: 9 },
-  { i: 'monitor', t: 'monitor', x: 8, y: 21, w: 4, h: 13 },
-  { i: 'gainers', t: 'gainers', x: 0, y: 21, w: 2, h: 13 },
-  { i: 'losers', t: 'losers', x: 2, y: 21, w: 2, h: 13 },
-  { i: 'turnover', t: 'turnover', x: 4, y: 21, w: 2, h: 13 },
-  { i: 'activity', t: 'activity', x: 6, y: 21, w: 2, h: 13 },
+  { i: 'monitor', t: 'monitor', x: 8, y: 21, w: 4, h: 16 },
+  { i: 'market-cap', t: 'market-cap', x: 0, y: 21, w: 2, h: 16 },
+  { i: 'industry-amount', t: 'industry-amount', x: 2, y: 21, w: 2, h: 16 },
+  { i: 'turnover', t: 'turnover', x: 4, y: 21, w: 2, h: 16 },
+  { i: 'activity', t: 'activity', x: 6, y: 21, w: 2, h: 16 },
 ]

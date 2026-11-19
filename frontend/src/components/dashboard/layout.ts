@@ -18,7 +18,7 @@ export const MAX_H = 30
 export type WidgetType =
   | 'indices' | 'kpi' | 'distribution' | 'radar' | 'trend'
   | 'concept-rank' | 'industry-rank'
-  | 'gainers' | 'losers' | 'turnover' | 'activity'
+  | 'market-cap' | 'industry-amount' | 'turnover' | 'activity'
   | 'ladder' | 'monitor' | 'holding-notices' | 'ext-link'
 
 export interface DashboardItem {

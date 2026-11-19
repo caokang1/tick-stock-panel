@@ -274,7 +274,20 @@ def _leader_sort_key(row: dict) -> float:
     return value if value is not None else float("-inf")
 
 
-def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: int | None = None) -> dict:
+def _amount_leaders(items: list[dict], total_amount: float, limit: int = 10) -> list[dict]:
+    """按成交额排的板块前几名, 并标出占全市场成交额的比例(%)。"""
+    ranked = sorted((it for it in items if (it.get("amount") or 0) > 0), key=lambda x: x["amount"], reverse=True)
+    return [
+        {**it, "share_pct": it["amount"] / total_amount * 100 if total_amount > 0 else None}
+        for it in ranked[:limit]
+    ]
+
+
+def _dimension_rank(
+    rows: list[dict], repo, kind: str, limit: int = 5, level: int | None = None,
+    all_items: list[dict] | None = None,
+) -> dict:
+    """all_items: 传入一个列表时, 把全部板块(未截取)追加进去, 供成交额榜复用。"""
     if not rows:
         return {"leading": [], "lagging": []}
 
@@ -334,6 +347,8 @@ def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: in
             },
         })
 
+    if all_items is not None:
+        all_items.extend(items)
     leading = sorted(items, key=lambda x: x["avg_pct"], reverse=True)[:limit]
     lagging = sorted(items, key=lambda x: x["avg_pct"])[:limit]
     return {"leading": leading, "lagging": lagging}
@@ -343,7 +358,15 @@ def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: in
 # Top 行 / 涨跌幅分桶
 # ================================================================
 
-def _top_rows(rows: list[dict], key: str, descending: bool, limit: int = 8) -> list[dict]:
+def _market_cap(row: dict) -> float | None:
+    """总市值 = 收盘价 x 总股本; 缺任一项则没有。"""
+    close, shares = _finite(row.get("close")), _finite(row.get("total_shares"))
+    if close is None or shares is None or close <= 0 or shares <= 0:
+        return None
+    return close * shares
+
+
+def _top_rows(rows: list[dict], key: str, descending: bool, limit: int = 10) -> list[dict]:
     filtered = [r for r in rows if _finite(r.get(key)) is not None]
     filtered.sort(key=lambda r: _finite(r.get(key)) or 0, reverse=descending)
     return [
@@ -354,6 +377,7 @@ def _top_rows(rows: list[dict], key: str, descending: bool, limit: int = 8) -> l
             "change_pct": _finite(r.get("change_pct")),
             "amount": _finite(r.get("amount")),
             "turnover_rate": _finite(r.get("turnover_rate")),
+            "market_cap": _finite(r.get("market_cap")),
             "board": _board(str(r.get("symbol") or "")),
         }
         for r in filtered[:limit]
@@ -426,10 +450,10 @@ def build_market_overview(
             "activity": {"avg_turnover": 0, "high_turnover": 0, "high_vol_ratio": 0, "vol_ratio": 1},
             "radar": [],
             "emotion": {"score": 50, "label": "暂无"},
-            "top_gainers": [],
-            "top_losers": [],
+            "market_cap_leaders": [],
             "turnover_leaders": [],
             "active_leaders": [],
+            "industry_amount_leaders": [],
             "concept_rank": {"leading": [], "lagging": []},
             "industry_rank": {"leading": [], "lagging": []},
         }
@@ -439,7 +463,7 @@ def build_market_overview(
         rows: list[dict] = []
     else:
         cols = [
-            "symbol", "name", "close", "change_pct", "amount", "turnover_rate", "volume",
+            "symbol", "name", "close", "change_pct", "amount", "turnover_rate", "volume", "total_shares",
             "vol_ratio_5d", "consecutive_limit_ups", "signal_limit_up", "signal_broken_limit_up", "signal_limit_down",
             "ma5", "ma20", "ma60", "high_60d", "low_60d", "signal_n_day_high", "signal_n_day_low",
         ]
@@ -451,6 +475,9 @@ def build_market_overview(
         rows = [r for r in rows
                 if (_finite(r.get("volume")) or 0) > 0
                 or (_finite(r.get("change_pct")) or 0) != 0]
+
+    for r in rows:
+        r["market_cap"] = _market_cap(r)
 
     total = len(rows)
     up = sum(1 for r in rows if (_finite(r.get("change_pct")) or 0) > 0)
@@ -554,7 +581,8 @@ def build_market_overview(
     high_vol_ratio = sum(1 for v in vol_ratios if v >= 1.5)
 
     concept_rank = _dimension_rank(rows, repo, "concept")
-    industry_rank = _dimension_rank(rows, repo, "industry", level=2)
+    industry_items: list[dict] = []
+    industry_rank = _dimension_rank(rows, repo, "industry", level=2, all_items=industry_items)
 
     strong_diff_pct = (strong_up - strong_down) / total * 100 if total else 0
     high_vol_pct = high_vol_ratio / total * 100 if total else 0
@@ -635,10 +663,10 @@ def build_market_overview(
             "dimensions": emotion["dimensions"],
             "thresholds": emotion["thresholds"],
         },
-        "top_gainers": _top_rows(rows, "change_pct", True),
-        "top_losers": _top_rows(rows, "change_pct", False),
+        "market_cap_leaders": _top_rows(rows, "market_cap", True),
         "turnover_leaders": _top_rows(rows, "amount", True),
         "active_leaders": _top_rows(rows, "turnover_rate", True),
+        "industry_amount_leaders": _amount_leaders(industry_items, total_amount),
         "concept_rank": concept_rank,
         "industry_rank": industry_rank,
     })

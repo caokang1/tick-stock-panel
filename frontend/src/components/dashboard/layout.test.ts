@@ -86,12 +86,12 @@ describe('normalizeDashboardLayout', () => {
     const items = normalizeDashboardLayout({
       v: 1,
       items: [
-        { i: 'gainers', t: 'gainers', x: 0, y: 0, w: 3, h: 10 },
-        { i: 'gainers-2', t: 'gainers', x: 3, y: 0, w: 3, h: 10 },
+        { i: 'turnover', t: 'turnover', x: 0, y: 0, w: 3, h: 10 },
+        { i: 'turnover-2', t: 'turnover', x: 3, y: 0, w: 3, h: 10 },
         { i: 'mystery', t: 'no-such-widget', x: 0, y: 0, w: 3, h: 3 },
       ],
     })
-    expect(items.map(it => it.i)).toEqual(['gainers'])
+    expect(items.map(it => it.i)).toEqual(['turnover'])
   })
 
   it('drops ext-link items with unsafe or missing urls', () => {
@@ -123,12 +123,12 @@ describe('normalizeDashboardLayout', () => {
     const items = normalizeDashboardLayout({
       v: 1,
       items: [
-        { i: 'gainers', t: 'gainers', x: 0, y: 0, w: 3, h: 7 },
-        { i: 'losers', t: 'losers', x: 0, y: 0, w: 3, h: 7 },
+        { i: 'turnover', t: 'turnover', x: 0, y: 0, w: 3, h: 7 },
+        { i: 'activity', t: 'activity', x: 0, y: 0, w: 3, h: 7 },
       ],
     })
-    const a = items.find(it => it.i === 'gainers')!
-    const b = items.find(it => it.i === 'losers')!
+    const a = items.find(it => it.i === 'turnover')!
+    const b = items.find(it => it.i === 'activity')!
     expect(a.y).toBe(0)
     expect(b.y).toBeGreaterThanOrEqual(a.y + a.h)
     for (let p = 0; p < items.length; p += 1) {

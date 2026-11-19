@@ -35,7 +35,7 @@ export function resolveHasNoData(ds?: DataStatus): boolean {
 }
 
 /** 打开个股预览的来源榜 (用于行高亮与切股导航列表) */
-type PreviewSource = 'gain' | 'loss' | 'amount' | 'active' | 'concept' | 'industry' | 'alert'
+type PreviewSource = 'cap' | 'amount' | 'active' | 'concept' | 'industry' | 'alert'
 
 export function Dashboard() {
   const qc = useQueryClient()
