@@ -138,3 +138,43 @@ def test_feishu_production_retries_keep_backoff(monkeypatch, caplog):
     assert calls["n"] == 3
     assert sleeps == [1, 2]
     assert "已重试 3 次" in caplog.text
+
+
+def test_email_adapter_finds_http_proxy_and_ignores_others(monkeypatch):
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    assert email_adapter.http_proxy() is None
+    monkeypatch.setenv("HTTPS_PROXY", "socks5://127.0.0.1:7890")
+    assert email_adapter.http_proxy() is None
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+    assert email_adapter.http_proxy() == ("127.0.0.1", 7890)
+
+
+def test_email_adapter_sends_html_body_and_attachment(monkeypatch):
+    sent = []
+
+    class FakeSsl:
+        def __init__(self, host, port, timeout):
+            pass
+
+        def login(self, username, password):
+            pass
+
+        def send_message(self, message):
+            sent.append(message)
+
+        def quit(self):
+            pass
+
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(email_adapter.smtplib, "SMTP_SSL", FakeSsl)
+    config = {"host": "smtp.example.com", "port": 465, "security": "ssl", "username": "a@example.com",
+              "from_address": "a@example.com", "to_addresses": ["b@example.com"]}
+    assert email_adapter.send_email(config, "pw", "标题", "纯文字", html="<p>网页</p>",
+                                    attachments=[("汇总.html", "<p>网页</p>".encode(), "text/html")])
+    parts = {part.get_content_type(): part for part in sent[0].walk() if not part.is_multipart()}
+    assert "纯文字" in sent[0].get_body(("plain",)).get_content()
+    assert "<p>网页</p>" in sent[0].get_body(("html",)).get_content()
+    attached = [part for part in sent[0].iter_attachments()]
+    assert [a.get_filename() for a in attached] == ["汇总.html"] and "text/html" in parts
