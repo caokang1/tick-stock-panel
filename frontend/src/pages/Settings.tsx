@@ -6,7 +6,7 @@
 import { Suspense, lazy, useEffect, useState, type ComponentType } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Database, KeyRound, LayoutGrid, Library, Radio, Sparkles, Settings2, PanelLeftClose, PanelLeftOpen, Clock3, Info, PackageOpen, MessageSquareQuote, Newspaper } from 'lucide-react'
+import { Database, KeyRound, LayoutGrid, Library, Radio, Sparkles, Settings2, PanelLeftClose, PanelLeftOpen, Clock3, Info, PackageOpen, MessageSquareQuote, Newspaper, BellRing } from 'lucide-react'
 // 面板按 tab 按需加载: 8 个面板源码 270KB+, 同步打包会让设置页 chunk 膨胀
 const SettingsAIPanel = lazy(() => import('./settings/AI').then(m => ({ default: m.SettingsAIPanel })))
 const SettingsApiTokensPanel = lazy(() => import('./settings/ApiTokens').then(m => ({ default: m.SettingsApiTokensPanel })))
@@ -20,6 +20,7 @@ const SettingsAboutPanel = lazy(() => import('./settings/About').then(m => ({ de
 // 本地定制: 左上角那句话的语料库
 const MottoSettingsPanel = lazy(() => import('@/custom/market-motto/SettingsPanel').then(m => ({ default: m.MottoSettingsPanel })))
 const DigestSettingsPanel = lazy(() => import('@/custom/daily-digest/SettingsPanel').then(m => ({ default: m.DigestSettingsPanel })))
+const RecapSignalSettingsPanel = lazy(() => import('@/custom/recap-signals/SettingsPanel').then(m => ({ default: m.RecapSignalSettingsPanel })))
 const SettingsDataSourcesPanel = lazy(() => import('./settings/DataSources').then(m => ({ default: m.SettingsDataSourcesPanel })))
 import { PageHeader } from '@/components/PageHeader'
 import { cn } from '@/lib/cn'
@@ -42,6 +43,7 @@ const TABS: readonly TabDef[] = [
   { key: 'pages',      label: '页面管理',   icon: LayoutGrid, panel: SettingsPageAdminPanel },
   { key: 'motto',      label: '左上角的话', icon: MessageSquareQuote, panel: MottoSettingsPanel },
   { key: 'digest',     label: '每日汇总',   icon: Newspaper, panel: DigestSettingsPanel },
+  { key: 'recap-signals', label: '复盘信号', icon: BellRing, panel: RecapSignalSettingsPanel },
   { key: 'timeout',    label: '网络设置',   icon: Clock3,     panel: SettingsTimeoutPanel },
   { key: 'api-tokens', label: '开放接口',   icon: KeyRound,   panel: SettingsApiTokensPanel },
   { key: 'definitions', label: '定义目录',   icon: Library,    panel: SettingsDefinitionsPanel },
