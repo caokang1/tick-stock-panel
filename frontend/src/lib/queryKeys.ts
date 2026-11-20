@@ -221,4 +221,7 @@ export const SSE_INVALIDATE_PREFIXES = [
   // 概念/行业分析的全市场快照 (#419): 后端读最新日内缓存, 行情更新后需重取,
   // 否则停留页面时板块聚合数值一直停留旧值。仅两页打开时才实际发请求。
   'market-snapshot',
+  // 本地定制: 市场环境页的盘中刷新 (src/custom/regime-live)。只命中触发重算的那一条查询,
+  // 页面开着时才会真的请求; 重算出新结果后由页面自己重读各块数据。
+  'regime-live',
 ] as const

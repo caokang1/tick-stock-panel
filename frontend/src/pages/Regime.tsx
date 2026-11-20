@@ -20,6 +20,7 @@ import {
   MARKET_PHASE_LABELS, MARKET_PHASE_COLORS, MARKET_PHASE_ORDER,
 } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { useRegimeLive } from '@/custom/regime-live/useRegimeLive'
 import { useChartTheme, useTheme } from '@/lib/theme'
 import { toast } from '@/components/Toast'
 import { Modal } from '@/components/Modal'
@@ -154,6 +155,7 @@ const cardCls = 'regime-panel'
 // ── 主组件 ────────────────────────────────────────────────
 export function Regime() {
   const qc = useQueryClient()
+  useRegimeLive() // 本地定制: 行情更新后重算今天这一行并刷新页面
   const [range, setRange] = useState<RangePreset>('1y')
   // 视图 tab: 市场环境(状态/趋势/日历) 与 情绪周期(阶段/主线) 两组内容同页切换,
   // 避免单页过长需要大幅滚动。两组共用时间范围与重算入口。
