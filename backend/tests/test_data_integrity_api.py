@@ -149,7 +149,7 @@ def test_api_repair_reports_old_history_and_next_attempt_repairs_it(app_env, mon
 
 
 @pytest.mark.parametrize("body", [
-    {"lookback_days": 0}, {"lookback_days": 367}, {"asset_types": []},
+    {"lookback_days": 0}, {"lookback_days": 3661}, {"asset_types": []},
     {"asset_types": ["../../outside"]},
 ])
 def test_api_rejects_invalid_scan_scope(app_env, body):

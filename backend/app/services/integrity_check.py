@@ -14,6 +14,7 @@ from app.services.fs_utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 ASSET_TABLES = {family: table for table, family in data_integrity.TABLE_FAMILY.items()}
+MAX_LOOKBACK_DAYS = 3660  # 本地定制: 自检最多可以查近十年 (原来是 366 天)
 ASSET_LABELS = {"stock": "股票", "etf": "ETF", "index": "指数"}
 KIND_LABELS = {
     "missing": "日期缺失", "snapshot": "盘中快照未定版", "corrupt": "文件损坏或为空",
@@ -45,8 +46,8 @@ def _repairable(issue: data_integrity.IntegrityIssue) -> bool:
 
 
 def _scan(root: Path, days: int, assets: list[str], end: date, progress=None):
-    if not 1 <= days <= 366 or not assets or not set(assets).issubset(ASSET_TABLES):
-        raise ValueError("请选择资产类型和 1～366 天的检查范围")
+    if not 1 <= days <= MAX_LOOKBACK_DAYS or not assets or not set(assets).issubset(ASSET_TABLES):
+        raise ValueError(f"请选择资产类型和 1～{MAX_LOOKBACK_DAYS} 天的检查范围")
     if end >= cn_today():
         raise ValueError("自检只检查已经结束的历史日期")
 

@@ -58,7 +58,7 @@ export function DataIntegrityPanel({ hasCap, isRunning, job, defaultAssets, onSt
           <select aria-label="自检范围" value={days} disabled={pending}
             onChange={e => { setDays(Number(e.target.value)); setConfirm(false) }}
             className="rounded-btn border border-border bg-surface px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-accent/40">
-            {[7, 30, 90, 365].map(n => <option key={n} value={n}>最近 {n === 365 ? '一年' : `${n} 天`}</option>)}
+            {[7, 30, 90, 365, 1095, 3650].map(n => <option key={n} value={n}>最近 {n >= 365 ? `${({ 365: '一', 1095: '三', 3650: '十' } as Record<number, string>)[n]}年` : `${n} 天`}</option>)}
           </select>
         </div>
         <button onClick={() => scan.mutate()} disabled={pending || !assets.length}

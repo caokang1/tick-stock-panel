@@ -701,9 +701,12 @@ def _no_trading_calendar_by_default():
     (fetched_at=0.0 表示 TTL 已过, 不用 time.monotonic — 本文件顶部
     `from datetime import time` 会遮蔽标准库 time。)"""
     saved = di._CAL
+    saved_local = di._local_calendar
     di._CAL = (0.0, None)
+    di._local_calendar = lambda: None  # 测试不读本机真实行情库里的日历
     yield
     di._CAL = saved
+    di._local_calendar = saved_local
 
 
 def _patch_fuyao_calendar(monkeypatch, days):
@@ -775,3 +778,21 @@ def test_scan_no_false_missing_when_etf_lags_over_holiday(tmp_path, monkeypatch)
     for day in (date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)):
         _write_daily_partition(tmp_path, "kline_etf_daily", day, None)
     assert scan_recent_integrity(tmp_path, today=date(2026, 9, 28)) == []
+
+
+def test_local_calendar_used_when_fuyao_missing(monkeypatch):
+    """没有 fuyao 时用本机存下来的交易日历: 节假日不进候选日; 日历之后的日子仍按工作日近似。"""
+    fake = SimpleNamespace(is_custom_provider=lambda name: False)
+    monkeypatch.setattr(app.data_providers, "custom", fake)
+    monkeypatch.setattr(di, "_local_calendar", lambda: {date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 28)})
+    got = _candidate_days(date(2026, 9, 30), 7)
+    assert got == [date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 28), date(2026, 9, 29)]
+
+
+def test_deep_scan_does_not_report_holidays_with_local_calendar(tmp_path, monkeypatch):
+    """深度自检: 本机日历覆盖到的休市日不再列为“待核实”。"""
+    fake = SimpleNamespace(is_custom_provider=lambda name: False)
+    monkeypatch.setattr(app.data_providers, "custom", fake)
+    monkeypatch.setattr(di, "_local_calendar", lambda: {date(2026, 9, 24), date(2026, 9, 28)})
+    issues = scan_recent_integrity(tmp_path, today=date(2026, 9, 29), lookback_days=5, deep=True)
+    assert all(i.kind != "unconfirmed" for i in issues)

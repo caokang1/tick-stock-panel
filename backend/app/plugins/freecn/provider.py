@@ -79,6 +79,15 @@ def _store() -> Any:
     return store
 
 
+def trading_days() -> list[date]:
+    """本机行情库里已知的交易日（随日线下载一起存下来的），只读文件、不联网。没有下载过时返回空。"""
+    try:
+        days = _store().read_calendar()
+    except Exception:  # noqa: BLE001 —— 行情库还没就绪时当作没有日历
+        return []
+    return [d.astype("datetime64[D]").astype(date) for d in days]
+
+
 def _as_date(value: datetime | date) -> date:
     return value.date() if isinstance(value, datetime) else value
 

@@ -368,10 +368,12 @@ def _candidate_days(today: date, lookback_days: int) -> list[date]:
     从未取到日历时回退工作日近似 (历史行为)。
     """
     calendar = _trading_calendar()
+    # 本机日历只记到最近一次下载那天: 之后的日子日历还不知道, 仍按工作日近似
+    covered = max(calendar) if calendar else None
     days: list[date] = []
     for offset in range(1, lookback_days + 1):
         d = today - timedelta(days=offset)
-        if calendar is not None:
+        if calendar is not None and d <= covered:
             if d in calendar:
                 days.append(d)
         elif d.weekday() < 5:
@@ -388,6 +390,16 @@ def _candidate_days(today: date, lookback_days: int) -> list[date]:
 _CAL_TTL_S = 1800.0  # 成功/失败结论统一 30 分钟复取 (日历变化极稀疏)
 _CAL_LOCK = threading.Lock()
 _CAL: tuple[float, set[date] | None] = (0.0, None)  # (取数时刻, 交易日集合)
+
+
+def _local_calendar() -> set[date] | None:
+    """本地定制: 没有 fuyao 时, 用免费来源随日线存在本机的交易日历 (只读文件, 不联网)。没有 → None。"""
+    try:
+        from app.plugins.freecn.provider import trading_days
+
+        return set(trading_days()) or None
+    except Exception:  # noqa: BLE001 — 日历不可用不上抛
+        return None
 
 
 def _trading_calendar() -> set[date] | None:
@@ -412,6 +424,8 @@ def _trading_calendar() -> set[date] | None:
                 fetched = set(raw)
     except Exception:  # noqa: BLE001 — 日历不可用不上抛, 回退 stale/近似
         fetched = None
+    if fetched is None and cached is None:
+        fetched = _local_calendar()
     with _CAL_LOCK:
         _CAL = (now, fetched if fetched is not None else cached)
         return _CAL[1]

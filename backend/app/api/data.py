@@ -44,7 +44,7 @@ def get_workload(request: Request) -> dict:
 
 
 class IntegrityScanIn(BaseModel):
-    lookback_days: int = Field(default=30, ge=1, le=366)
+    lookback_days: int = Field(default=30, ge=1, le=3660)  # 与 integrity_check.MAX_LOOKBACK_DAYS 一致
     asset_types: list[Literal["stock", "etf", "index"]] | None = Field(default=None, min_length=1, max_length=3)
 
 
